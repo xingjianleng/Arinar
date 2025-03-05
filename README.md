@@ -1,4 +1,4 @@
-**ARINAR: Bi-Level Autoregressive Feature-by-Feature Generative Models** [[Paper]()]
+**ARINAR: Bi-Level Autoregressive Feature-by-Feature Generative Models** [[Paper](https://arxiv.org/abs/2503.02883)]
 
 *Qinyu Zhao, Stephen Gould, Liang Zheng*
 
@@ -91,7 +91,7 @@ If you use our codebase or our results in your research, please cite our work:
 @article{zhao2025arinar,
   title={ARINAR: Bi-Level Autoregressive Feature-by-Feature Generative Models},
   author={Zhao, Qinyu and Gould, Stephen and Zheng, Liang},
-  journal={arXiv preprint},
+  journal={arXiv preprint arXiv:2503.02883},
   year={2025}
 }
 ```
