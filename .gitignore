@@ -2,3 +2,4 @@ __pycache__/
 /outputs/
 /pretrained_models/
 debug.py
+data*
