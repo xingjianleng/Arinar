@@ -3,3 +3,5 @@ __pycache__/
 /pretrained_models/
 debug.py
 data*
+jobs*
+slurm_outputs*
