@@ -91,7 +91,9 @@ class MAR(nn.Module):
         # --------------------------------------------------------------------------
         # MAR head specifics
         self.arhead = ARHead(num_gaussians=num_gaussians, token_embed_dim=self.token_embed_dim,
-                                            decoder_embed_dim=decoder_embed_dim, grad_checkpointing=grad_checkpointing)
+                                    decoder_embed_dim=decoder_embed_dim, width=decoder_embed_dim,
+                                    depth=1,
+                                    grad_checkpointing=grad_checkpointing)
         self.head_batch_mul = 1
 
     def initialize_weights(self):
@@ -334,15 +336,15 @@ def mar_base(**kwargs):
 
 def mar_large(**kwargs):
     model = MAR(
-        encoder_embed_dim=1024, encoder_depth=16, encoder_num_heads=16,
-        decoder_embed_dim=1024, decoder_depth=16, decoder_num_heads=16,
+        encoder_embed_dim=1024, encoder_depth=18, encoder_num_heads=16,
+        decoder_embed_dim=1024, decoder_depth=18, decoder_num_heads=16,
         mlp_ratio=4, norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
     return model
 
 
 def mar_huge(**kwargs):
     model = MAR(
-        encoder_embed_dim=1280, encoder_depth=20, encoder_num_heads=16,
-        decoder_embed_dim=1280, decoder_depth=20, decoder_num_heads=16,
+        encoder_embed_dim=1280, encoder_depth=22, encoder_num_heads=16,
+        decoder_embed_dim=1280, decoder_depth=22, decoder_num_heads=16,
         mlp_ratio=4, norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
     return model
