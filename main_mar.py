@@ -161,7 +161,8 @@ def main(args):
     ])
 
     if args.use_cached:
-        if os.path.exists(args.cached_path, "mar_cache.h5") and os.path.exists(args.cached_path, "mar_cache_h5.json"):
+        if os.path.exists(os.path.join(args.cached_path, "mar_cache.h5")) and \
+            os.path.exists(os.path.join(args.cached_path, "mar_cache_h5.json")):
             dataset_train = CachedH5Folder(args.cached_path)
         else:
             dataset_train = CachedFolder(args.cached_path)
