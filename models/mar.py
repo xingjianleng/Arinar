@@ -35,6 +35,8 @@ class MAR(nn.Module):
                  buffer_size=64,
                  num_gaussians=1,
                  grad_checkpointing=False,
+                 head_width=1024,
+                 head_depth=1
                  ):
         super().__init__()
 
@@ -91,9 +93,9 @@ class MAR(nn.Module):
         # --------------------------------------------------------------------------
         # MAR head specifics
         self.arhead = ARHead(num_gaussians=num_gaussians, token_embed_dim=self.token_embed_dim,
-                                    decoder_embed_dim=decoder_embed_dim, width=decoder_embed_dim,
-                                    depth=1,
-                                    grad_checkpointing=grad_checkpointing)
+                                decoder_embed_dim=decoder_embed_dim, width=head_width,
+                                depth=head_depth,
+                                grad_checkpointing=grad_checkpointing)
         self.head_batch_mul = 1
 
     def initialize_weights(self):

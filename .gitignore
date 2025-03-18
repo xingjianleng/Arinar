@@ -2,3 +2,7 @@ __pycache__/
 /outputs/
 /pretrained_models/
 debug.py
+ablation.sh
+run.sh
+fid_stats/
+output.out

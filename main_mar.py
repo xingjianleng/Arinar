@@ -86,7 +86,10 @@ def get_args_parser():
     parser.add_argument('--proj_dropout', type=float, default=0.1,
                         help='projection dropout')
     parser.add_argument('--buffer_size', type=int, default=64)
+    # ARHead params
     parser.add_argument('--num_gaussians', type=int, default=1)
+    parser.add_argument('--head_width', type=int, default=1024)
+    parser.add_argument('--head_depth', type=int, default=1)
 
     # Dataset parameters
     parser.add_argument('--data_path', default='./data/imagenet', type=str,
@@ -197,6 +200,8 @@ def main(args):
         buffer_size=args.buffer_size,
         num_gaussians=args.num_gaussians,
         grad_checkpointing=args.grad_checkpointing,
+        head_width=args.head_width,
+        head_depth=args.head_depth,
     )
 
     print("Model = %s" % str(model))
