@@ -17,7 +17,7 @@ from util.misc import NativeScalerWithGradNormCount as NativeScaler
 from util.loader import CachedFolder
 
 from models.vae import AutoencoderKL
-from models import mar
+from models import mar, var
 from engine_mar import train_one_epoch, evaluate
 import copy
 
@@ -76,7 +76,12 @@ def get_args_parser():
                         help='epochs to warmup LR')
     parser.add_argument('--ema_rate', default=0.9999, type=float)
 
-    # MAR params
+    # First layer AR parameters
+    parser.add_argument('--model_type', type=str, default='mar_large',
+                        help='model type (default: mar_large)')
+    ## VAR params
+
+    ## MAR params
     parser.add_argument('--mask_ratio_min', type=float, default=0.7,
                         help='Minimum mask ratio')
     parser.add_argument('--grad_clip', type=float, default=3.0,
@@ -86,7 +91,7 @@ def get_args_parser():
     parser.add_argument('--proj_dropout', type=float, default=0.1,
                         help='projection dropout')
     parser.add_argument('--buffer_size', type=int, default=64)
-    # ARHead params
+    # Second layer AR parameters
     parser.add_argument('--num_gaussians', type=int, default=1)
     parser.add_argument('--head_width', type=int, default=1024)
     parser.add_argument('--head_depth', type=int, default=1)
@@ -187,23 +192,36 @@ def main(args):
     for param in vae.parameters():
         param.requires_grad = False
 
-    model = mar.__dict__[args.model](
-        img_size=args.img_size,
-        vae_stride=args.vae_stride,
-        patch_size=args.patch_size,
-        vae_embed_dim=args.vae_embed_dim,
-        mask_ratio_min=args.mask_ratio_min,
-        label_drop_prob=args.label_drop_prob,
-        class_num=args.class_num,
-        attn_dropout=args.attn_dropout,
-        proj_dropout=args.proj_dropout,
-        buffer_size=args.buffer_size,
-        num_gaussians=args.num_gaussians,
-        grad_checkpointing=args.grad_checkpointing,
-        head_width=args.head_width,
-        head_depth=args.head_depth,
-    )
-
+    if args.model.startswith('mar'):
+        model = mar.__dict__[args.model](
+            img_size=args.img_size,
+            vae_stride=args.vae_stride,
+            patch_size=args.patch_size,
+            vae_embed_dim=args.vae_embed_dim,
+            mask_ratio_min=args.mask_ratio_min,
+            label_drop_prob=args.label_drop_prob,
+            class_num=args.class_num,
+            attn_dropout=args.attn_dropout,
+            proj_dropout=args.proj_dropout,
+            buffer_size=args.buffer_size,
+            num_gaussians=args.num_gaussians,
+            grad_checkpointing=args.grad_checkpointing,
+            head_width=args.head_width,
+            head_depth=args.head_depth,
+        )
+    elif args.model.startswith('var'):
+        model = var.__dict__[args.model](
+            img_size=args.img_size,
+            vae_stride=args.vae_stride,
+            patch_size=args.patch_size,
+            vae_embed_dim=args.vae_embed_dim,
+            class_num=args.class_num,
+            patch_nums=(1, 2, 3, 4, 5, 6, 8, 10, 13, 16),
+            num_gaussians=args.num_gaussians
+        )
+    else:
+        raise NotImplementedError("Model not implemented")
+    
     print("Model = %s" % str(model))
     # following timm: set wd as 0 for bias and norm layers
     n_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
