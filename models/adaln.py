@@ -5,6 +5,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+# this file only provides the 3 blocks used in VAR transformer
+__all__ = ['FFN', 'AdaLNSelfAttn', 'AdaLNBeforeHead']
+
+
 def drop_path(x, drop_prob: float = 0., training: bool = False, scale_by_keep: bool = True):    # taken from timm
     if drop_prob == 0. or not training: return x
     keep_prob = 1 - drop_prob
@@ -35,16 +39,15 @@ try:
     from flash_attn.ops.fused_dense import fused_mlp_func
 except ImportError: pass
 # automatically import faster attention implementations
-try: from xformers.ops import memory_efficient_attention
-except ImportError: pass
+# try: 
+#     from xformers.ops import memory_efficient_attention
+# except ImportError: pass
 try: from flash_attn import flash_attn_func              # qkv: BLHc, ret: BLHcq
 except ImportError: pass
-try: from torch.nn.functional import scaled_dot_product_attention as slow_attn    # q, k, v: BHLc
-except ImportError:
-    def slow_attn(query, key, value, scale: float, attn_mask=None, dropout_p=0.0):
-        attn = query.mul(scale) @ key.transpose(-2, -1) # BHLc @ BHcL => BHLL
-        if attn_mask is not None: attn.add_(attn_mask)
-        return (F.dropout(attn.softmax(dim=-1), p=dropout_p, inplace=True) if dropout_p > 0 else attn.softmax(dim=-1)) @ value
+def slow_attn(query, key, value, scale: float, attn_mask=None, dropout_p=0.0):
+    attn = query.mul(scale) @ key.transpose(-2, -1) # BHLc @ BHcL => BHLL
+    if attn_mask is not None: attn.add_(attn_mask)
+    return (F.dropout(attn.softmax(dim=-1), p=dropout_p, inplace=True) if dropout_p > 0 else attn.softmax(dim=-1)) @ value
 
 
 class FFN(nn.Module):
@@ -96,6 +99,7 @@ class SelfAttention(nn.Module):
         self.proj_drop = nn.Dropout(proj_drop, inplace=True) if proj_drop > 0 else nn.Identity()
         self.attn_drop: float = attn_drop
         self.using_flash = flash_if_available and flash_attn_func is not None
+        self.using_xform = flash_if_available and memory_efficient_attention is not None
         
         # only used during inference
         self.caching, self.cached_k, self.cached_v = False, None, None
@@ -103,18 +107,20 @@ class SelfAttention(nn.Module):
     def kv_caching(self, enable: bool): self.caching, self.cached_k, self.cached_v = enable, None, None
     
     # NOTE: attn_bias is None during inference because kv cache is enabled
-    def forward(self, x, causal):
+    def forward(self, x, attn_bias, causal=False):
         B, L, C = x.shape
         
         qkv = F.linear(input=x, weight=self.mat_qkv.weight, bias=torch.cat((self.q_bias, self.zero_k_bias, self.v_bias))).view(B, L, 3, self.num_heads, self.head_dim)
         main_type = qkv.dtype
         # qkv: BL3Hc
         
-        q, k, v = qkv.unbind(dim=2); dim_cat = 1
+        using_flash = self.using_flash and attn_bias is None and qkv.dtype != torch.float32
+        if using_flash or self.using_xform: q, k, v = qkv.unbind(dim=2); dim_cat = 1   # q or k or v: BLHc
+        else: q, k, v = qkv.permute(2, 0, 3, 1, 4).unbind(dim=0); dim_cat = 2               # q or k or v: BHLc
         
         if self.attn_l2_norm:
             scale_mul = self.scale_mul_1H11.clamp_max(self.max_scale_mul).exp()
-            scale_mul = scale_mul.transpose(1, 2)  # 1H11 to 11H1
+            if using_flash or self.using_xform: scale_mul = scale_mul.transpose(1, 2)  # 1H11 to 11H1
             q = F.normalize(q, dim=-1).mul(scale_mul)
             k = F.normalize(k, dim=-1)
         
@@ -123,17 +129,26 @@ class SelfAttention(nn.Module):
             else: k = self.cached_k = torch.cat((self.cached_k, k), dim=dim_cat); v = self.cached_v = torch.cat((self.cached_v, v), dim=dim_cat)
         
         dropout_p = self.attn_drop if self.training else 0.0
-        oup = flash_attn_func(q.to(dtype=main_type), k.to(dtype=main_type), v.to(dtype=main_type), dropout_p=dropout_p, softmax_scale=self.scale, causal=causal).view(B, L, C)
+        if using_flash:
+            oup = flash_attn_func(q.to(dtype=main_type), k.to(dtype=main_type), v.to(dtype=main_type), dropout_p=dropout_p, softmax_scale=self.scale,
+                                  causal=causal).view(B, L, C)
+        elif self.using_xform:
+            oup = memory_efficient_attention(q.to(dtype=main_type), k.to(dtype=main_type), v.to(dtype=main_type), attn_bias=None if attn_bias is None else attn_bias.to(dtype=main_type).expand(B, self.num_heads, -1, -1), p=dropout_p, scale=self.scale).view(B, L, C)
+        else:
+            oup = slow_attn(query=q, key=k, value=v, scale=self.scale, attn_mask=attn_bias, dropout_p=dropout_p).transpose(1, 2).reshape(B, L, C)
         
         return self.proj_drop(self.proj(oup))
         # attn = (q @ k.transpose(-2, -1)).add_(attn_bias + self.local_rpb())  # BHLc @ BHcL => BHLL
         # attn = self.attn_drop(attn.softmax(dim=-1))
         # oup = (attn @ v).transpose_(1, 2).reshape(B, L, -1)     # BHLL @ BHLc = BHLc => BLHc => BLC
+    
+    def extra_repr(self) -> str:
+        return f'using_flash={self.using_flash}, using_xform={self.using_xform}, attn_l2_norm={self.attn_l2_norm}'
 
 
 class AdaLNSelfAttn(nn.Module):
     def __init__(
-        self, block_idx, last_drop_p, embed_dim, cond_dim, norm_layer,
+        self, block_idx, last_drop_p, embed_dim, cond_dim, shared_aln: bool, norm_layer,
         num_heads, mlp_ratio=4., drop=0., attn_drop=0., drop_path=0., attn_l2_norm=False,
         flash_if_available=False, fused_if_available=True,
     ):
@@ -145,17 +160,27 @@ class AdaLNSelfAttn(nn.Module):
         self.ffn = FFN(in_features=embed_dim, hidden_features=round(embed_dim * mlp_ratio), drop=drop, fused_if_available=fused_if_available)
         
         self.ln_wo_grad = norm_layer(embed_dim, elementwise_affine=False)
-        lin = nn.Linear(cond_dim, 6*embed_dim)
-        self.ada_lin = nn.Sequential(nn.SiLU(inplace=False), lin)
+        self.shared_aln = shared_aln
+        if self.shared_aln:
+            self.ada_gss = nn.Parameter(torch.randn(1, 1, 6, embed_dim) / embed_dim**0.5)
+        else:
+            lin = nn.Linear(cond_dim, 6*embed_dim)
+            self.ada_lin = nn.Sequential(nn.SiLU(inplace=False), lin)
         
         self.fused_add_norm_fn = None
     
     # NOTE: attn_bias is None during inference because kv cache is enabled
-    def forward(self, x, cond_BD, causal=True):   # C: embed_dim, D: cond_dim
-        gamma1, gamma2, scale1, scale2, shift1, shift2 = self.ada_lin(cond_BD).view(-1, 1, 6, self.C).unbind(2)
-        x = x + self.drop_path(self.attn( self.ln_wo_grad(x).mul(scale1.add(1)).add_(shift1), causal).mul_(gamma1))
+    def forward(self, x, cond_BD, attn_bias, causal=False):   # C: embed_dim, D: cond_dim
+        if self.shared_aln:
+            gamma1, gamma2, scale1, scale2, shift1, shift2 = (self.ada_gss + cond_BD).unbind(2) # 116C + B16C =unbind(2)=> 6 B1C
+        else:
+            gamma1, gamma2, scale1, scale2, shift1, shift2 = self.ada_lin(cond_BD).view(-1, 1, 6, self.C).unbind(2)
+        x = x + self.drop_path(self.attn( self.ln_wo_grad(x).mul(scale1.add(1)).add_(shift1), attn_bias=attn_bias, causal=causal).mul_(gamma1))
         x = x + self.drop_path(self.ffn( self.ln_wo_grad(x).mul(scale2.add(1)).add_(shift2) ).mul(gamma2)) # this mul(gamma2) cannot be in-placed when FusedMLP is used
         return x
+    
+    def extra_repr(self) -> str:
+        return f'shared_aln={self.shared_aln}'
 
 
 class AdaLNBeforeHead(nn.Module):

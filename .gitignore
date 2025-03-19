@@ -5,3 +5,7 @@ debug.py
 data*
 jobs*
 slurm_outputs*
+ablation.sh
+run.sh
+fid_stats/
+output.out

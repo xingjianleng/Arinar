@@ -31,9 +31,9 @@ class ARHead(nn.Module):
         self.blocks = nn.ModuleList([
             AdaLNSelfAttn(
                 cond_dim=decoder_embed_dim,
-                block_idx=block_idx, embed_dim=width, norm_layer=norm_layer, num_heads=4, mlp_ratio=4.,
+                block_idx=block_idx, embed_dim=width, norm_layer=norm_layer, num_heads=16, mlp_ratio=4.,
                 drop=0., attn_drop=0., drop_path=dpr[block_idx], last_drop_p=0 if block_idx == 0 else dpr[block_idx-1],
-                attn_l2_norm=False,
+                attn_l2_norm=False, shared_aln=False,
                 flash_if_available=True, fused_if_available=True,
             )
             for block_idx in range(depth)
@@ -63,7 +63,7 @@ class ARHead(nn.Module):
         x = x + self.pos_embedding.expand(bsz, -1, -1)
 
         for b in self.blocks:
-            x = b(x=x, cond_BD=z, causal=True)
+            x = b(x=x, cond_BD=z, attn_bias=None, causal=True)
         x = self.head(self.head_nm(x, z))
 
         # Compute loss
@@ -75,7 +75,10 @@ class ARHead(nn.Module):
         log_likelihood = torch.logsumexp(torch.log(weight) + log_likelihood, dim=-1)  # [bsz*seq_len, token_embed_dim]
 
         nll = -log_likelihood.sum(-1) # Calculate NLL loss
-        nll = (nll * mask).sum() / mask.sum()
+        if mask is not None:
+            nll = (nll * mask).sum() / mask.sum()
+        else:
+            nll = nll.mean()
 
         return nll
 
@@ -91,7 +94,7 @@ class ARHead(nn.Module):
         for i in range(self.token_embed_dim):
             x = x + self.pos_embedding[:, i:i+1].expand(bsz, 1, -1)
             for b in self.blocks:
-                x = b(x=x, cond_BD=z, causal=False)
+                x = b(x=x, cond_BD=z, attn_bias=None, causal=False)
             x = self.head(self.head_nm(x, z))
 
             weight, mu, logvar = self.extract_gmm(x)
