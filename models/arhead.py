@@ -10,7 +10,7 @@ from models.adaln import AdaLNSelfAttn, AdaLNBeforeHead
 
 
 class ARHead(nn.Module):
-    def __init__(self, num_gaussians, token_embed_dim, decoder_embed_dim, width=768, depth=1, grad_checkpointing=False):
+    def __init__(self, num_gaussians, token_embed_dim, decoder_embed_dim, width=768, depth=1, dist_model="gmm"):
         super(ARHead, self).__init__()
         self.num_gaussians = num_gaussians # Unused for now
         self.token_embed_dim = token_embed_dim
