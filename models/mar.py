@@ -11,6 +11,8 @@ from torch.utils.checkpoint import checkpoint
 from timm.models.vision_transformer import Block
 
 from models.arhead import ARHead
+from models.gmm_head_givt import GMMHead
+from models.gmm_head_cov import GMMCovHead
 
 
 def mask_by_order(mask_len, order, bsz, seq_len):
@@ -35,6 +37,7 @@ class MAR(nn.Module):
                  buffer_size=64,
                  num_gaussians=1,
                  grad_checkpointing=False,
+                 head_type="ar_gmm",
                  head_width=1024,
                  head_depth=1
                  ):
@@ -92,10 +95,28 @@ class MAR(nn.Module):
 
         # --------------------------------------------------------------------------
         # MAR head specifics
-        self.arhead = ARHead(num_gaussians=num_gaussians, token_embed_dim=self.token_embed_dim,
-                                decoder_embed_dim=decoder_embed_dim, width=head_width,
-                                depth=head_depth,
-                                grad_checkpointing=grad_checkpointing)
+        if head_type == "ar_gmm":
+            self.arhead = ARHead(num_gaussians=num_gaussians, token_embed_dim=self.token_embed_dim,
+                                    decoder_embed_dim=decoder_embed_dim, width=head_width,
+                                    depth=head_depth,
+                                    dist_model="gmm")
+        elif head_type == "ar_diff_loss":
+            self.arhead = ARHead(num_gaussians=num_gaussians, token_embed_dim=self.token_embed_dim,
+                                    decoder_embed_dim=decoder_embed_dim, width=head_width,
+                                    depth=head_depth,
+                                    dist_model="diff_loss")
+        elif head_type == "gmm_wo_ar":
+            # The arhead name is misleading, it is actually a GMM head without AR
+            self.arhead = GMMHead(num_gaussians=num_gaussians, token_embed_dim=self.token_embed_dim,
+                                decoder_embed_dim=decoder_embed_dim,
+                                width=head_width, depth=head_depth, grad_checkpointing=grad_checkpointing)
+        elif head_type == "gmm_cov_wo_ar":
+            self.arhead = GMMCovHead(num_gaussians=num_gaussians, token_embed_dim=self.token_embed_dim,
+                                decoder_embed_dim=decoder_embed_dim,
+                                width=head_width, depth=head_depth, grad_checkpointing=grad_checkpointing)
+        else:
+            raise NotImplementedError
+        
         self.head_batch_mul = 1
 
     def initialize_weights(self):

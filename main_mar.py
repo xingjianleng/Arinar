@@ -92,6 +92,8 @@ def get_args_parser():
                         help='projection dropout')
     parser.add_argument('--buffer_size', type=int, default=64)
     # Second layer AR parameters
+    parser.add_argument('--head_type', type=str, choices=['ar_gmm', 'ar_diff_loss', 'gmm_wo_ar', 'gmm_cov_wo_ar'], 
+                        default='ar_gmm', help='head type (default: ar_gmm)')
     parser.add_argument('--num_gaussians', type=int, default=1)
     parser.add_argument('--head_width', type=int, default=1024)
     parser.add_argument('--head_depth', type=int, default=1)
@@ -212,6 +214,7 @@ def main(args):
             grad_checkpointing=args.grad_checkpointing,
             head_width=args.head_width,
             head_depth=args.head_depth,
+            head_type=args.head_type
         )
     elif args.model.startswith('var'):
         model = var.__dict__[args.model](
