@@ -10,7 +10,8 @@ from torch.utils.checkpoint import checkpoint
 
 from timm.models.vision_transformer import Block
 
-from models.arhead import ARHead
+from models.arhead_gmm import ARHead_gmm
+from models.arhead_diff import ARHead_diff
 from models.gmm_head_givt import GMMHead
 from models.gmm_head_cov import GMMCovHead
 
@@ -39,7 +40,8 @@ class MAR(nn.Module):
                  grad_checkpointing=False,
                  head_type="ar_gmm",
                  head_width=1024,
-                 head_depth=1
+                 head_depth=1,
+                 **kwargs
                  ):
         super().__init__()
 
@@ -96,15 +98,13 @@ class MAR(nn.Module):
         # --------------------------------------------------------------------------
         # MAR head specifics
         if head_type == "ar_gmm":
-            self.arhead = ARHead(num_gaussians=num_gaussians, token_embed_dim=self.token_embed_dim,
+            self.arhead = ARHead_gmm(num_gaussians=num_gaussians, token_embed_dim=self.token_embed_dim,
                                     decoder_embed_dim=decoder_embed_dim, width=head_width,
-                                    depth=head_depth,
-                                    dist_model="gmm")
+                                    depth=head_depth)
         elif head_type == "ar_diff_loss":
-            self.arhead = ARHead(num_gaussians=num_gaussians, token_embed_dim=self.token_embed_dim,
+            self.arhead = ARHead_diff(num_gaussians=num_gaussians, token_embed_dim=self.token_embed_dim,
                                     decoder_embed_dim=decoder_embed_dim, width=head_width,
-                                    depth=head_depth,
-                                    dist_model="diff_loss")
+                                    depth=head_depth, **kwargs)
         elif head_type == "gmm_wo_ar":
             # The arhead name is misleading, it is actually a GMM head without AR
             self.arhead = GMMHead(num_gaussians=num_gaussians, token_embed_dim=self.token_embed_dim,

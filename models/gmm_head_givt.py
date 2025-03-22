@@ -2,7 +2,7 @@ from math import pi
 import torch
 import torch.nn as nn
 
-from models.mlp import UncondSimpleMLPAdaLN
+from models.uncond_mlp import UncondSimpleMLPAdaLN
 
 
 class GMMHead(nn.Module):

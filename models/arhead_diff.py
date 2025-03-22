@@ -6,13 +6,15 @@ import torch
 import torch.nn as nn
 from torch.utils.checkpoint import checkpoint
 
-from models.adaln import AdaLNSelfAttn, AdaLNBeforeHead
+from models.adaln import AdaLNSelfAttn
+from models.cond_mlp import SimpleMLPAdaLN
+from diffusion import create_diffusion
 
 
-class ARHead(nn.Module):
-    def __init__(self, num_gaussians, token_embed_dim, decoder_embed_dim, width=768, depth=1, dist_model="gmm"):
-        super(ARHead, self).__init__()
-        self.num_gaussians = num_gaussians # Unused for now
+class ARHead_diff(nn.Module):
+    def __init__(self, num_gaussians, token_embed_dim, decoder_embed_dim, width=768, depth=1, num_sampling_steps='100', diffloss_w=1024, diffloss_d=6):
+        super(ARHead_diff, self).__init__()
+        self.num_gaussians = num_gaussians
         self.token_embed_dim = token_embed_dim
         self.width = width
         
@@ -42,18 +44,19 @@ class ARHead(nn.Module):
         fused_add_norm_fns = [b.fused_add_norm_fn is not None for b in self.blocks]
         self.using_fused_add_norm_fn = any(fused_add_norm_fns)
         
-        # Model head
-        self.head_nm = AdaLNBeforeHead(width, decoder_embed_dim, norm_layer=norm_layer)
-        self.head = nn.Linear(width, 2*self.num_gaussians + self.num_gaussians) # mean and logvar
-
         self.init_weights()
 
-    def extract_gmm(self, pred):
-        weight = pred[:, :, -self.num_gaussians:].softmax(dim=-1)
-        mu = pred[:, :, :self.num_gaussians]
-        logvar = pred[:, :, self.num_gaussians: 2 * self.num_gaussians]
+        self.net = SimpleMLPAdaLN(
+            in_channels=1,  # feature-by-feature diffusion
+            model_channels=diffloss_w,
+            out_channels=1 * 2,  # for vlb loss
+            z_channels=width,
+            num_res_blocks=diffloss_d,  # hacking
+        )
 
-        return weight, mu, logvar
+        self.train_diffusion = create_diffusion(timestep_respacing="", noise_schedule="cosine")
+        self.gen_diffusion = create_diffusion(timestep_respacing=num_sampling_steps, noise_schedule="cosine")
+
  
     def forward(self, z, target, mask=None):
         bsz = z.shape[0]
@@ -64,23 +67,17 @@ class ARHead(nn.Module):
 
         for b in self.blocks:
             x = b(x=x, cond_BD=z, attn_bias=None, causal=True)
-        x = self.head(self.head_nm(x, z))
+        
+        x = x.reshape(-1, self.width)
+        target = target.reshape(-1, 1)
 
-        # Compute loss
-        weight, mu, logvar = self.extract_gmm(x)
-
-        # Multi-variate Gaussian likelihood
-        diff = target.unsqueeze(-1) - mu  # [bsz*seq_len, token_embed_dim, num_gaussians]
-        log_likelihood = -0.5 * (diff**2 / logvar.exp() + logvar)  # [bsz*seq_len, token_embed_dim, num_gaussians]
-        log_likelihood = torch.logsumexp(torch.log(weight) + log_likelihood, dim=-1)  # [bsz*seq_len, token_embed_dim]
-
-        nll = -log_likelihood.sum(-1) # Calculate NLL loss
+        t = torch.randint(0, self.train_diffusion.num_timesteps, (target.shape[0],), device=target.device)
+        model_kwargs = dict(c=x)
+        loss_dict = self.train_diffusion.training_losses(self.net, target, t, model_kwargs)
+        loss = loss_dict["loss"].reshape(bsz, self.token_embed_dim).mean(-1)
         if mask is not None:
-            nll = (nll * mask).sum() / mask.sum()
-        else:
-            nll = nll.mean()
-
-        return nll
+            loss = (loss * mask).sum() / mask.sum()
+        return loss.mean()
 
     def sample(self, z, temperature=1.0, cfg=1.0, top_p=0.99):
         bsz = z.shape[0]
@@ -95,43 +92,25 @@ class ARHead(nn.Module):
             x = x + self.pos_embedding[:, i:i+1].expand(bsz, 1, -1)
             for b in self.blocks:
                 x = b(x=x, cond_BD=z, attn_bias=None, causal=False)
-            x = self.head(self.head_nm(x, z))
 
-            weight, mu, logvar = self.extract_gmm(x)
-
-            if cfg == 1.0:
-                x = self.sample_from_gmm(weight, mu, logvar, temperature=temperature, num_samples=1)
-                x = x[0]
-                # ll = self.get_log_likelihood(x, weight, mu, logvar)
-
-                # # Get the top p of the samples
-                # prob = ll.permute(1, 2, 0).softmax(dim=-1)
-                # sorted_prob, sorted_idx = torch.sort(prob, dim=-1, descending=True)
-                # sorted_idx = sorted_idx[:, :, :int(100 * top_p)]
-
-                # x = torch.gather(x.permute(1, 2, 0), -1, sorted_idx)
-                # prob = torch.gather(prob, -1, sorted_idx)
-                # prob = prob / prob.sum(dim=-1, keepdim=True)
-
-                # selected = torch.distributions.Categorical(prob).sample()
-                # x = torch.gather(x, -1, selected.unsqueeze(-1)).squeeze(-1)
+            if not cfg == 1.0:
+                noise = torch.randn(x.shape[0] // 2, 1).cuda()
+                noise = torch.cat([noise, noise], dim=0)
+                model_kwargs = dict(c=x, cfg_scale=cfg)
+                sample_fn = self.net.forward_with_cfg
             else:
-                half_bsz = len(x) // 2
-                x = self.sample_from_gmm(weight[:half_bsz], mu[:half_bsz], logvar[:half_bsz], 
-                                         temperature=temperature, num_samples=1000)
-                ll_w_c = self.get_log_likelihood(x, weight[:half_bsz], mu[:half_bsz], logvar[:half_bsz])
-                ll_wo_c = self.get_log_likelihood(x, weight[half_bsz:], mu[half_bsz:], logvar[half_bsz:])
-                ll = (ll_w_c - ll_wo_c) * (cfg - 1.)
+                noise = torch.randn(bsz, 1).cuda()
+                model_kwargs = dict(c=x.squeeze(1))
+                sample_fn = self.net.forward
 
-                x = x.permute(1, 2, 0)
-                prob = ll.permute(1, 2, 0).softmax(dim=-1)
-                selected = torch.distributions.Categorical(prob).sample()
-                x = torch.gather(x, -1, selected.unsqueeze(-1)).squeeze(-1)
-                x = torch.cat([x, x], dim=0)
+            sampled_token_latent = self.gen_diffusion.p_sample_loop(
+                sample_fn, noise.shape, noise, clip_denoised=False, model_kwargs=model_kwargs, progress=False,
+                temperature=temperature
+            )
 
-            res.append(x)
+            res.append(sampled_token_latent)
 
-            x = self.input_proj(x.unsqueeze(-1))
+            x = self.input_proj(sampled_token_latent.unsqueeze(-1))
         
         for b in self.blocks: b.attn.kv_caching(False)
         res = torch.cat(res, dim=1)
@@ -160,7 +139,7 @@ class ARHead(nn.Module):
 
         return log_likelihood
 
-    def init_weights(self, init_adaln=0.5, init_adaln_gamma=1e-5, init_head=0.02, init_std=0.02, conv_std_or_gain=0.02):
+    def init_weights(self, init_adaln=0.5, init_adaln_gamma=1e-5, init_std=0.02, conv_std_or_gain=0.02):
         nn.init.trunc_normal_(self.start_token.data, mean=0, std=init_std)
         nn.init.trunc_normal_(self.pos_embedding.data, mean=0, std=init_std)
 
@@ -182,19 +161,6 @@ class ARHead(nn.Module):
                 if conv_std_or_gain > 0: nn.init.trunc_normal_(m.weight.data, std=conv_std_or_gain)
                 else: nn.init.xavier_normal_(m.weight.data, gain=-conv_std_or_gain)
                 if with_bias: m.bias.data.zero_()
-        
-        if init_head >= 0:
-            if isinstance(self.head, nn.Linear):
-                self.head.weight.data.mul_(init_head)
-                self.head.bias.data.zero_()
-            elif isinstance(self.head, nn.Sequential):
-                self.head[-1].weight.data.mul_(init_head)
-                self.head[-1].bias.data.zero_()
-        
-        if isinstance(self.head_nm, AdaLNBeforeHead):
-            self.head_nm.ada_lin[-1].weight.data.mul_(init_adaln)
-            if hasattr(self.head_nm.ada_lin[-1], 'bias') and self.head_nm.ada_lin[-1].bias is not None:
-                self.head_nm.ada_lin[-1].bias.data.zero_()
         
         depth = len(self.blocks)
         for block_idx, sab in enumerate(self.blocks):
