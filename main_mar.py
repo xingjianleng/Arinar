@@ -97,6 +97,9 @@ def get_args_parser():
     parser.add_argument('--num_gaussians', type=int, default=1)
     parser.add_argument('--head_width', type=int, default=1024)
     parser.add_argument('--head_depth', type=int, default=1)
+    parser.add_argument('--diffloss_d', type=int, default=6)
+    parser.add_argument('--diffloss_w', type=int, default=1024)
+    parser.add_argument('--num_sampling_steps', type=str, default="100")
 
     # Dataset parameters
     parser.add_argument('--data_path', default='./data/imagenet', type=str,
@@ -198,6 +201,15 @@ def main(args):
     for param in vae.parameters():
         param.requires_grad = False
 
+    if args.head_type == "ar_diff_loss":
+        kwargs = {
+            "num_sampling_steps": args.num_sampling_steps, 
+            "diffloss_w": args.diffloss_w, 
+            "diffloss_d": args.diffloss_d
+        }
+    else:
+        kwargs = {}
+
     if args.model.startswith('mar'):
         model = mar.__dict__[args.model](
             img_size=args.img_size,
@@ -214,7 +226,8 @@ def main(args):
             grad_checkpointing=args.grad_checkpointing,
             head_width=args.head_width,
             head_depth=args.head_depth,
-            head_type=args.head_type
+            head_type=args.head_type,
+            **kwargs
         )
     elif args.model.startswith('var'):
         model = var.__dict__[args.model](

@@ -10,7 +10,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.distributed as dist
 
-from models.arhead import ARHead
+from models.arhead_gmm import ARHead_gmm
 from models.adaln import AdaLNSelfAttn, AdaLNBeforeHead
 
 class SharedAdaLin(nn.Linear):
@@ -124,7 +124,7 @@ class VAR(nn.Module):
         self.init_weights(init_adaln=0.5, init_adaln_gamma=1e-3, init_head=0.02, init_std=init_std)
 
         # 6. AR model head
-        self.arhead = ARHead(num_gaussians, self.token_embed_dim, self.embed_dim, width=head_width, depth=head_depth)
+        self.arhead = ARHead_gmm(num_gaussians, self.token_embed_dim, self.embed_dim, width=head_width, depth=head_depth)
         
 
     def patchify(self, x):

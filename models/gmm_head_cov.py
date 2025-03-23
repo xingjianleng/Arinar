@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 
-from models.mlp import UncondSimpleMLPAdaLN
+from models.uncond_mlp import UncondSimpleMLPAdaLN
 
 class GMMCovHead(nn.Module):
     def __init__(self, num_gaussians, token_embed_dim, decoder_embed_dim, width=1024, depth=6, grad_checkpointing=False):
