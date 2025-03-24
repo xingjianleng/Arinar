@@ -63,6 +63,8 @@ class CachedFolder(datasets.DatasetFolder):
 class CachedH5FolderDev(Dataset):
     def __init__(self, root):
         self.h5_path = os.path.join(root, "mar_cache.h5")
+        self.file = None
+
         h5_json = os.path.join(root, "mar_cache_h5.json")
 
         with open(h5_json, "r") as f:
@@ -79,11 +81,13 @@ class CachedH5FolderDev(Dataset):
         return len(self.samples)
 
     def __getitem__(self, index):
+        if self.file is None:
+            self.file = h5py.File(self.h5_path, 'r')
+
         path, target = self.samples[index]
 
-        with h5py.File(self.h5_path, "r", swmr=True) as h5_file:
-            data = h5_file[path]
-            data = np.load(io.BytesIO(np.array(data)))
+        data = self.file[path]
+        data = np.load(io.BytesIO(np.array(data)))
 
         if torch.rand(1) < 0.5:  # randomly hflip
             moments = data['moments']
