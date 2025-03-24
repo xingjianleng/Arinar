@@ -1,4 +1,5 @@
 import os
+import time
 
 import numpy as np
 import io
@@ -59,8 +60,8 @@ class CachedFolder(datasets.DatasetFolder):
             moments = data['moments_flip']
 
         return moments, target
-
-
+    
+    
 class CachedH5FolderDev(Dataset):
     def __init__(self, root):
         self.h5_path = os.path.join(root, "mar_cache.h5")
@@ -94,5 +95,30 @@ class CachedH5FolderDev(Dataset):
             moments = data['moments']
         else:
             moments = data['moments_flip']
+
+        return moments, target
+    
+
+class CachedNpzData(Dataset):
+    def __init__(self, root):
+        super().__init__()
+        print("Loading data into memory...")
+        start = time.time()
+        saved_npz = np.load(os.path.join(root, "mar_cache.npz"))
+        self.labels = saved_npz['label']
+        self.data = saved_npz['data']  # (num of samples, 2 hflips, 32, 16, 16)
+        print(f"Loaded {len(self.labels)} samples in {time.time() - start:.2f}s")
+
+    def __len__(self):
+        return len(self.labels)
+
+    def __getitem__(self, index):
+        target = self.labels[index]
+        data = self.data[index]
+
+        if torch.rand(1) < 0.5:  # randomly hflip
+            moments = data[0]
+        else:
+            moments = data[1]
 
         return moments, target

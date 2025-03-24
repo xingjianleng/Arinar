@@ -14,7 +14,7 @@ import torchvision.datasets as datasets
 from util.crop import center_crop_arr
 import util.misc as misc
 from util.misc import NativeScalerWithGradNormCount as NativeScaler
-from util.loader import CachedFolder, CachedH5FolderDev
+from util.loader import CachedFolder, CachedNpzData
 
 from models.vae import AutoencoderKL
 from models import mar, var
@@ -176,9 +176,8 @@ def main(args):
     ])
 
     if args.use_cached:
-        if os.path.exists(os.path.join(args.cached_path, "mar_cache.h5")) and \
-            os.path.exists(os.path.join(args.cached_path, "mar_cache_h5.json")):
-            dataset_train = CachedH5FolderDev(args.cached_path)
+        if os.path.exists(os.path.join(args.cached_path, "mar_cache.npz")):
+            dataset_train = CachedNpzData(args.cached_path)
         else:
             dataset_train = CachedFolder(args.cached_path)
     else:
