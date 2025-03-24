@@ -2,7 +2,8 @@ __pycache__/
 /outputs/
 /pretrained_models/
 debug.py
-ablation.sh
-run.sh
+/scripts/
 fid_stats/
 output.out
+/data/
+playground.ipynb

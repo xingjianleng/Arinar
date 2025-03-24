@@ -350,17 +350,25 @@ class MAR(nn.Module):
 
 
 def mar_base(**kwargs):
+    if 'enc_dec_depth' in kwargs:
+        encoder_depth = decoder_depth = kwargs.pop('enc_dec_depth')
+    else:
+        encoder_depth = decoder_depth = 14
     model = MAR(
-        encoder_embed_dim=768, encoder_depth=14, encoder_num_heads=12,
-        decoder_embed_dim=768, decoder_depth=14, decoder_num_heads=12,
+        encoder_embed_dim=768, encoder_depth=encoder_depth, encoder_num_heads=12,
+        decoder_embed_dim=768, decoder_depth=decoder_depth, decoder_num_heads=12,
         mlp_ratio=4, norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
     return model
 
 
 def mar_large(**kwargs):
+    if 'enc_dec_depth' in kwargs:
+        encoder_depth = decoder_depth = kwargs.pop('enc_dec_depth')
+    else:
+        encoder_depth = decoder_depth = 18
     model = MAR(
-        encoder_embed_dim=1024, encoder_depth=18, encoder_num_heads=16,
-        decoder_embed_dim=1024, decoder_depth=18, decoder_num_heads=16,
+        encoder_embed_dim=1024, encoder_depth=encoder_depth, encoder_num_heads=16,
+        decoder_embed_dim=1024, decoder_depth=decoder_depth, decoder_num_heads=16,
         mlp_ratio=4, norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
     return model
 

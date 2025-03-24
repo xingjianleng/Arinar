@@ -1,7 +1,12 @@
 import os
+
 import numpy as np
+import io
+import json
+import h5py
 
 import torch
+from torch.utils.data import Dataset
 import torchvision.datasets as datasets
 
 
@@ -48,6 +53,38 @@ class CachedFolder(datasets.DatasetFolder):
         path, target = self.samples[index]
 
         data = np.load(path)
+        if torch.rand(1) < 0.5:  # randomly hflip
+            moments = data['moments']
+        else:
+            moments = data['moments_flip']
+
+        return moments, target
+
+class CachedH5FolderDev(Dataset):
+    def __init__(self, root):
+        self.h5_path = os.path.join(root, "mar_cache.h5")
+        h5_json = os.path.join(root, "mar_cache_h5.json")
+
+        with open(h5_json, "r") as f:
+            cache = json.load(f)
+
+        label_names = sorted(list(set([elem.split("/")[0] for elem in cache])))
+        self.label2idx = {label: i for i, label in enumerate(label_names)}
+        self.samples = {}
+        for c in cache:
+            self.samples[c] = self.label2idx[c.split("/")[0]]
+        self.samples = list(self.samples.items())
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, index):
+        path, target = self.samples[index]
+
+        with h5py.File(self.h5_path, "r", swmr=True) as h5_file:
+            data = h5_file[path]
+            data = np.load(io.BytesIO(np.array(data)))
+
         if torch.rand(1) < 0.5:  # randomly hflip
             moments = data['moments']
         else:

@@ -14,7 +14,7 @@ import torchvision.datasets as datasets
 from util.crop import center_crop_arr
 import util.misc as misc
 from util.misc import NativeScalerWithGradNormCount as NativeScaler
-from util.loader import CachedFolder
+from util.loader import CachedFolder, CachedH5FolderDev
 
 from models.vae import AutoencoderKL
 from models import mar, var
@@ -82,6 +82,8 @@ def get_args_parser():
     ## VAR params
 
     ## MAR params
+    parser.add_argument('--enc_dec_depth', type=int, default=-1,
+                        help='Encoder/Decoder depth')
     parser.add_argument('--mask_ratio_min', type=float, default=0.7,
                         help='Minimum mask ratio')
     parser.add_argument('--grad_clip', type=float, default=3.0,
@@ -174,7 +176,11 @@ def main(args):
     ])
 
     if args.use_cached:
-        dataset_train = CachedFolder(args.cached_path)
+        if os.path.exists(os.path.join(args.cached_path, "mar_cache.h5")) and \
+            os.path.exists(os.path.join(args.cached_path, "mar_cache_h5.json")):
+            dataset_train = CachedH5FolderDev(args.cached_path)
+        else:
+            dataset_train = CachedFolder(args.cached_path)
     else:
         dataset_train = datasets.ImageFolder(os.path.join(args.data_path, 'train'), transform=transform_train)
     print(dataset_train)
@@ -205,6 +211,8 @@ def main(args):
         }
     else:
         kwargs = {}
+    if args.enc_dec_depth > 0:
+        kwargs["enc_dec_depth"] = args.enc_dec_depth
 
     if args.model.startswith('mar'):
         model = mar.__dict__[args.model](
