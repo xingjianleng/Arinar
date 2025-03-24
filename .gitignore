@@ -9,3 +9,5 @@ ablation.sh
 run.sh
 fid_stats/
 output.out
+/scripts/
+playground.ipynb
