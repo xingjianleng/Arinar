@@ -94,13 +94,13 @@ def get_args_parser():
                         help='projection dropout')
     parser.add_argument('--buffer_size', type=int, default=64)
     # Second layer AR parameters
-    parser.add_argument('--head_type', type=str, choices=['ar_gmm', 'ar_diff_loss', 'gmm_wo_ar', 'gmm_cov_wo_ar'], 
+    parser.add_argument('--head_type', type=str, choices=['ar_gmm', 'ar_diff_loss', 'gmm_wo_ar', 'gmm_cov_wo_ar', 'ar_byte'], 
                         default='ar_gmm', help='head type (default: ar_gmm)')
     parser.add_argument('--num_gaussians', type=int, default=1)
+    parser.add_argument('--inner_ar_width', type=int, default=1024)
+    parser.add_argument('--inner_ar_depth', type=int, default=1)
     parser.add_argument('--head_width', type=int, default=1024)
-    parser.add_argument('--head_depth', type=int, default=1)
-    parser.add_argument('--diffloss_d', type=int, default=6)
-    parser.add_argument('--diffloss_w', type=int, default=1024)
+    parser.add_argument('--head_depth', type=int, default=6)
     parser.add_argument('--num_sampling_steps', type=str, default="100")
 
     # Dataset parameters
@@ -175,27 +175,28 @@ def main(args):
         transforms.Normalize([0.5, 0.5, 0.5], [0.5, 0.5, 0.5])
     ])
 
-    if args.use_cached:
-        if os.path.exists(os.path.join(args.cached_path, "mar_cache.npz")):
-            dataset_train = CachedNpzData(args.cached_path)
+    if not args.evaluate:
+        if args.use_cached:
+            if os.path.exists(os.path.join(args.cached_path, "mar_cache.npz")):
+                dataset_train = CachedNpzData(args.cached_path)
+            else:
+                dataset_train = CachedFolder(args.cached_path)
         else:
-            dataset_train = CachedFolder(args.cached_path)
-    else:
-        dataset_train = datasets.ImageFolder(os.path.join(args.data_path, 'train'), transform=transform_train)
-    print(dataset_train)
+            dataset_train = datasets.ImageFolder(os.path.join(args.data_path, 'train'), transform=transform_train)
+        print(dataset_train)
 
-    sampler_train = torch.utils.data.DistributedSampler(
-        dataset_train, num_replicas=num_tasks, rank=global_rank, shuffle=True
-    )
-    print("Sampler_train = %s" % str(sampler_train))
+        sampler_train = torch.utils.data.DistributedSampler(
+            dataset_train, num_replicas=num_tasks, rank=global_rank, shuffle=True
+        )
+        print("Sampler_train = %s" % str(sampler_train))
 
-    data_loader_train = torch.utils.data.DataLoader(
-        dataset_train, sampler=sampler_train,
-        batch_size=args.batch_size,
-        num_workers=args.num_workers,
-        pin_memory=args.pin_mem,
-        drop_last=True,
-    )
+        data_loader_train = torch.utils.data.DataLoader(
+            dataset_train, sampler=sampler_train,
+            batch_size=args.batch_size,
+            num_workers=args.num_workers,
+            pin_memory=args.pin_mem,
+            drop_last=True,
+        )
 
     # define the vae and mar model
     vae = AutoencoderKL(embed_dim=args.vae_embed_dim, ch_mult=(1, 1, 2, 2, 4), ckpt_path=args.vae_path).cuda().eval()
@@ -205,8 +206,6 @@ def main(args):
     if args.head_type == "ar_diff_loss":
         kwargs = {
             "num_sampling_steps": args.num_sampling_steps, 
-            "diffloss_w": args.diffloss_w, 
-            "diffloss_d": args.diffloss_d
         }
     else:
         kwargs = {}
@@ -227,6 +226,8 @@ def main(args):
             buffer_size=args.buffer_size,
             num_gaussians=args.num_gaussians,
             grad_checkpointing=args.grad_checkpointing,
+            inner_ar_width=args.inner_ar_width,
+            inner_ar_depth=args.inner_ar_depth,
             head_width=args.head_width,
             head_depth=args.head_depth,
             head_type=args.head_type,

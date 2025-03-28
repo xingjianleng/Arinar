@@ -124,7 +124,7 @@ class VAR(nn.Module):
         self.init_weights(init_adaln=0.5, init_adaln_gamma=1e-3, init_head=0.02, init_std=init_std)
 
         # 6. AR model head
-        self.arhead = ARHead_gmm(num_gaussians, self.token_embed_dim, self.embed_dim, width=head_width, depth=head_depth)
+        self.arhead = ARHead_gmm(num_gaussians, self.token_embed_dim, self.embed_dim, inner_ar_width=head_width, inner_ar_depth=head_depth)
         
 
     def patchify(self, x):

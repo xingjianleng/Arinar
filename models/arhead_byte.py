@@ -6,26 +6,46 @@ import torch
 import torch.nn as nn
 from torch.utils.checkpoint import checkpoint
 
-from models.adaln import AdaLNSelfAttn
-from models.cond_mlp import SimpleMLPAdaLN
-from diffusion import create_diffusion
+from models.adaln import AdaLNSelfAttn, AdaLNBeforeHead
 
 
-class ARHead_diff(nn.Module):
-    def __init__(self, num_gaussians, token_embed_dim, decoder_embed_dim, inner_ar_width=768, 
-                 inner_ar_depth=1, num_sampling_steps='100', head_width=1024, head_depth=6):
-        super(ARHead_diff, self).__init__()
-        self.num_gaussians = num_gaussians
+class ByteConverter:
+    def __init__(self):
+        self.shifts = torch.tensor([24, 16, 8, 0]).cuda()
+
+    def feature2byte(self, x):
+        int_repr = x.view(torch.int32).unsqueeze(-1)
+        bytes_tensor = ((int_repr >> self.shifts) & 0xFF)
+
+        return bytes_tensor
+    
+    def byte2feature(self, bytes_tensor):
+        x = (bytes_tensor << self.shifts).sum(-1)
+        x = x.to(torch.int32).view(torch.float32)
+
+        return x
+    
+    def to(self, device):
+        self.shifts = self.shifts.to(device)
+
+
+class ARHead_byte(nn.Module):
+    def __init__(self, num_bytes, token_embed_dim, decoder_embed_dim, 
+                 inner_ar_width=768, inner_ar_depth=1, head_width=768, head_depth=1):
+        super(ARHead_byte, self).__init__()
+        self.num_bytes = num_bytes
         self.token_embed_dim = token_embed_dim
-        self.width = inner_ar_width
+        self.inner_ar_width = inner_ar_width
         
         # Input projection
-        self.input_proj = nn.Linear(1, inner_ar_width)
+        self.vocabulary_size = 2 ** 8
+        self.word_embed = [nn.Embedding(self.vocabulary_size, self.inner_ar_width).cuda() for _ in range(num_bytes)]
         self.cond_proj = nn.Linear(decoder_embed_dim, inner_ar_width)
 
         # Start token and position embedding
         self.start_token = nn.Parameter(torch.empty(1, 1, inner_ar_width))
-        self.pos_embedding = nn.Parameter(torch.empty(1, token_embed_dim, inner_ar_width))
+        self.pos_embedding = nn.Parameter(torch.empty(1, token_embed_dim * num_bytes, inner_ar_width))
+        self.level_embed = nn.Parameter(torch.empty(1, 1, num_bytes, inner_ar_width))
 
         # Backbone blocks
         norm_layer = partial(nn.LayerNorm, eps=1e-6)
@@ -45,40 +65,49 @@ class ARHead_diff(nn.Module):
         fused_add_norm_fns = [b.fused_add_norm_fn is not None for b in self.blocks]
         self.using_fused_add_norm_fn = any(fused_add_norm_fns)
         
+        # Model head
+        self.head_nm = AdaLNBeforeHead(inner_ar_width, decoder_embed_dim, norm_layer=norm_layer)
+        self.head = nn.Linear(inner_ar_width, self.vocabulary_size)
+
         self.init_weights()
 
-        self.net = SimpleMLPAdaLN(
-            in_channels=1,  # feature-by-feature diffusion
-            model_channels=head_width,
-            out_channels=1 * 2,  # for vlb loss
-            z_channels=inner_ar_width,
-            num_res_blocks=head_depth,  # hacking
-        )
-
-        self.train_diffusion = create_diffusion(timestep_respacing="", noise_schedule="cosine")
-        self.gen_diffusion = create_diffusion(timestep_respacing=num_sampling_steps, noise_schedule="cosine")
+        self.byte_converter = ByteConverter()
+        self.loss_func = nn.CrossEntropyLoss(reduction='none')
 
  
     def forward(self, z, target, mask=None):
         bsz = z.shape[0]
+
+        # Convert target to byte representation
+        target = self.byte_converter.feature2byte(target)  # [bsz, token_embed_dim, num_bytes]
+
+        # Construct inputs
+        inp = torch.split(target, 1, dim=-1)  # [bsz, token_embed_dim, 1] * num_bytes
+        inp = [word_emb(x) for word_emb, x in zip(self.word_embed, inp)]
+        inp = torch.cat(inp, dim=2)  # [bsz, token_embed_dim, num_bytes, inner_ar_width]
+        inp = inp + self.level_embed.expand(bsz, -1, -1, -1)  # [bsz, token_embed_dim, num_bytes, inner_ar_width]
+        inp = inp.reshape(bsz, self.token_embed_dim * self.num_bytes, self.inner_ar_width)
+
         start = self.cond_proj(z).unsqueeze(1) + self.start_token.expand(bsz, 1, -1)
 
-        x = torch.cat((start, self.input_proj(target[:, :-1].unsqueeze(-1))), dim=1)
+        x = torch.cat((start, inp[:, :-1]), dim=1)
         x = x + self.pos_embedding.expand(bsz, -1, -1)
 
         for b in self.blocks:
             x = b(x=x, cond_BD=z, attn_bias=None, causal=True)
-        
-        x = x.reshape(-1, self.width)
-        target = target.reshape(-1, 1)
+        x = self.head(self.head_nm(x, z))
 
-        t = torch.randint(0, self.train_diffusion.num_timesteps, (target.shape[0],), device=target.device)
-        model_kwargs = dict(c=x)
-        loss_dict = self.train_diffusion.training_losses(self.net, target, t, model_kwargs)
-        loss = loss_dict["loss"].reshape(bsz, self.token_embed_dim).mean(-1)
+        x = x.reshape(bsz, self.token_embed_dim, self.num_bytes, self.vocabulary_size)
+
+        # Cross entropy loss
+        loss = self.loss_func(x.reshape(-1, self.vocabulary_size), target.flatten())
+        loss = loss.reshape(bsz, -1).mean(-1)
         if mask is not None:
             loss = (loss * mask).sum() / mask.sum()
-        return loss.mean()
+        else:
+            loss = loss.mean()
+
+        return loss
 
     def sample(self, z, temperature=1.0, cfg=1.0, top_p=0.99):
         bsz = z.shape[0]
@@ -90,57 +119,31 @@ class ARHead_diff(nn.Module):
         res = []
 
         for i in range(self.token_embed_dim):
-            x = x + self.pos_embedding[:, i:i+1].expand(bsz, 1, -1)
-            for b in self.blocks:
-                x = b(x=x, cond_BD=z, attn_bias=None, causal=False)
+            for byte in range(self.num_bytes):
+                x = x + self.level_embed[:, :, byte].expand(bsz, 1, -1)
+                x = x + self.pos_embedding[:, i:i+1].expand(bsz, 1, -1)
 
-            if not cfg == 1.0:
-                noise = torch.randn(x.shape[0] // 2, 1).cuda()
-                noise = torch.cat([noise, noise], dim=0)
-                model_kwargs = dict(c=x, cfg_scale=cfg)
-                sample_fn = self.net.forward_with_cfg
-            else:
-                noise = torch.randn(bsz, 1).cuda()
-                model_kwargs = dict(c=x.squeeze(1))
-                sample_fn = self.net.forward
+                for b in self.blocks:
+                    x = b(x=x, cond_BD=z, attn_bias=None, causal=False)
+                x = self.head(self.head_nm(x, z))
 
-            sampled_token_latent = self.gen_diffusion.p_sample_loop(
-                sample_fn, noise.shape, noise, clip_denoised=False, model_kwargs=model_kwargs, progress=False,
-                temperature=temperature
-            )
+                # Sample from the multinomial distribution
+                x = x.squeeze().softmax(dim=-1)
+                x = torch.multinomial(x, 1)
 
-            res.append(sampled_token_latent)
+                res.append(x)
 
-            x = self.input_proj(sampled_token_latent.unsqueeze(-1))
+                x = self.word_embed[byte](x)
         
         for b in self.blocks: b.attn.kv_caching(False)
         res = torch.cat(res, dim=1)
+        res = res.reshape(bsz, self.token_embed_dim, self.num_bytes)
+        res = self.byte_converter.byte2feature(res)
 
         return res
-    
-    def sample_from_gmm(self, weight, mu, logvar, temperature=1.0, num_samples=1):
-        sample_shape = [num_samples, mu.size(0), mu.size(1), mu.size(2)]
 
-        # Sample from the Gaussian Mixture Model
-        mixture = torch.distributions.Categorical(weight)
-        idx = mixture.sample((num_samples,))
 
-        eps = torch.randn(sample_shape, device=mu.device)
-        std = logvar.exp().sqrt() / temperature
-        sample = eps * std.unsqueeze(0) + mu.unsqueeze(0)  # [num_samples, bsz*seq_len, token_embed_dim, num_gaussians]
-
-        sample = sample.gather(-1, idx.unsqueeze(-1)).squeeze(-1)
-
-        return sample
-    
-    def get_log_likelihood(self, x, weight, mu, logvar):
-        diff = x.unsqueeze(-1) - mu.unsqueeze(0)  # [num_samples, bsz*seq_len, token_embed_dim, num_gaussians]
-        log_likelihood = -0.5 * (diff**2 / logvar.unsqueeze(0).exp() + logvar.unsqueeze(0) + math.log(2 * pi))
-        log_likelihood = torch.logsumexp(torch.log(weight.unsqueeze(0)) + log_likelihood, dim=-1)
-
-        return log_likelihood
-
-    def init_weights(self, init_adaln=0.5, init_adaln_gamma=1e-5, init_std=0.02, conv_std_or_gain=0.02):
+    def init_weights(self, init_adaln=0.5, init_adaln_gamma=1e-5, init_head=0.02, init_std=0.02, conv_std_or_gain=0.02):
         nn.init.trunc_normal_(self.start_token.data, mean=0, std=init_std)
         nn.init.trunc_normal_(self.pos_embedding.data, mean=0, std=init_std)
 
@@ -163,6 +166,19 @@ class ARHead_diff(nn.Module):
                 else: nn.init.xavier_normal_(m.weight.data, gain=-conv_std_or_gain)
                 if with_bias: m.bias.data.zero_()
         
+        if init_head >= 0:
+            if isinstance(self.head, nn.Linear):
+                self.head.weight.data.mul_(init_head)
+                self.head.bias.data.zero_()
+            elif isinstance(self.head, nn.Sequential):
+                self.head[-1].weight.data.mul_(init_head)
+                self.head[-1].bias.data.zero_()
+        
+        if isinstance(self.head_nm, AdaLNBeforeHead):
+            self.head_nm.ada_lin[-1].weight.data.mul_(init_adaln)
+            if hasattr(self.head_nm.ada_lin[-1], 'bias') and self.head_nm.ada_lin[-1].bias is not None:
+                self.head_nm.ada_lin[-1].bias.data.zero_()
+        
         depth = len(self.blocks)
         for block_idx, sab in enumerate(self.blocks):
             sab: AdaLNSelfAttn
@@ -172,11 +188,18 @@ class ARHead_diff(nn.Module):
                 nn.init.ones_(sab.ffn.fcg.bias)
                 nn.init.trunc_normal_(sab.ffn.fcg.weight, std=1e-5)
             if hasattr(sab, 'ada_lin'):
-                sab.ada_lin[-1].weight.data[2*self.width:].mul_(init_adaln)
-                sab.ada_lin[-1].weight.data[:2*self.width].mul_(init_adaln_gamma)
+                sab.ada_lin[-1].weight.data[2*self.inner_ar_width:].mul_(init_adaln)
+                sab.ada_lin[-1].weight.data[:2*self.inner_ar_width].mul_(init_adaln_gamma)
                 if hasattr(sab.ada_lin[-1], 'bias') and sab.ada_lin[-1].bias is not None:
                     sab.ada_lin[-1].bias.data.zero_()
             elif hasattr(sab, 'ada_gss'):
                 sab.ada_gss.data[:, :, 2:].mul_(init_adaln)
                 sab.ada_gss.data[:, :, :2].mul_(init_adaln_gamma)
    
+    def to(self, *args, **kwargs):
+        self = super().to(*args, **kwargs)
+
+        self.word_embed = [w.to(*args, **kwargs) for w in self.word_embed]
+        self.byte_converter.to(self.device)
+        
+        return self
