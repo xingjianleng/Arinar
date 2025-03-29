@@ -72,6 +72,9 @@ class ARHead_byte(nn.Module):
         self.byte_converter = ByteConverter()
         self.loss_func = nn.CrossEntropyLoss(reduction='none')
 
+        self.mask_for_byte0 = [float('-inf') if 66 <= i < 128 or i >= 194 else 0
+                               for i in range(self.vocabulary_size)]
+        self.mask_for_byte0 = torch.tensor(self.mask_for_byte0).cuda().reshape(1, 1, self.vocabulary_size)
  
     def forward(self, z, target, mask=None):
         bsz = z.shape[0]
@@ -126,6 +129,9 @@ class ARHead_byte(nn.Module):
                 x = self.head(self.head_nm(x, z))
 
                 # Sample from the multinomial distribution
+                if byte == 0:
+                    x += self.mask_for_byte0
+
                 x = x.squeeze().softmax(dim=-1)
                 x = torch.multinomial(x, 1)
 
