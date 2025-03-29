@@ -9,7 +9,7 @@ from torch.utils.checkpoint import checkpoint
 from models.adaln import AdaLNSelfAttn, AdaLNBeforeHead
 
 
-class ByteConverter:
+class ByteConverter():
     def __init__(self):
         self.shifts = torch.tensor([24, 16, 8, 0]).cuda()
 
@@ -24,9 +24,6 @@ class ByteConverter:
         x = x.to(torch.int32).view(torch.float32)
 
         return x
-    
-    def to(self, device):
-        self.shifts = self.shifts.to(device)
 
 
 class ARHead_byte(nn.Module):
@@ -39,7 +36,8 @@ class ARHead_byte(nn.Module):
         
         # Input projection
         self.vocabulary_size = 2 ** 8
-        self.word_embed = [nn.Embedding(self.vocabulary_size, self.inner_ar_width).cuda() for _ in range(num_bytes)]
+        self.word_embed = nn.ModuleList([nn.Embedding(self.vocabulary_size, self.inner_ar_width).cuda() 
+                                         for _ in range(num_bytes)])
         self.cond_proj = nn.Linear(decoder_embed_dim, inner_ar_width)
 
         # Start token and position embedding
@@ -195,11 +193,3 @@ class ARHead_byte(nn.Module):
             elif hasattr(sab, 'ada_gss'):
                 sab.ada_gss.data[:, :, 2:].mul_(init_adaln)
                 sab.ada_gss.data[:, :, :2].mul_(init_adaln_gamma)
-   
-    def to(self, *args, **kwargs):
-        self = super().to(*args, **kwargs)
-
-        self.word_embed = [w.to(*args, **kwargs) for w in self.word_embed]
-        self.byte_converter.to(self.device)
-        
-        return self
