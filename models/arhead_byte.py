@@ -9,21 +9,41 @@ from torch.utils.checkpoint import checkpoint
 from models.adaln import AdaLNSelfAttn, AdaLNBeforeHead
 
 
-class ARHead_gmm(nn.Module):
-    def __init__(self, num_gaussians, token_embed_dim, decoder_embed_dim, 
+class ByteConverter():
+    def __init__(self):
+        self.shifts = torch.tensor([24, 16, 8, 0]).cuda()
+
+    def feature2byte(self, x):
+        int_repr = x.view(torch.int32).unsqueeze(-1)
+        bytes_tensor = ((int_repr >> self.shifts) & 0xFF)
+
+        return bytes_tensor
+    
+    def byte2feature(self, bytes_tensor):
+        x = (bytes_tensor << self.shifts).sum(-1)
+        x = x.to(torch.int32).view(torch.float32)
+
+        return x
+
+
+class ARHead_byte(nn.Module):
+    def __init__(self, num_bytes, token_embed_dim, decoder_embed_dim, 
                  inner_ar_width=768, inner_ar_depth=1, head_width=768, head_depth=1):
-        super(ARHead_gmm, self).__init__()
-        self.num_gaussians = num_gaussians
+        super(ARHead_byte, self).__init__()
+        self.num_bytes = num_bytes
         self.token_embed_dim = token_embed_dim
-        self.width = inner_ar_width
+        self.inner_ar_width = inner_ar_width
         
         # Input projection
-        self.input_proj = nn.Linear(1, inner_ar_width)
+        self.vocabulary_size = 2 ** 8
+        self.word_embed = nn.ModuleList([nn.Embedding(self.vocabulary_size, self.inner_ar_width).cuda() 
+                                         for _ in range(num_bytes)])
         self.cond_proj = nn.Linear(decoder_embed_dim, inner_ar_width)
 
         # Start token and position embedding
         self.start_token = nn.Parameter(torch.empty(1, 1, inner_ar_width))
-        self.pos_embedding = nn.Parameter(torch.empty(1, token_embed_dim, inner_ar_width))
+        self.pos_embedding = nn.Parameter(torch.empty(1, token_embed_dim * num_bytes, inner_ar_width))
+        self.level_embed = nn.Parameter(torch.empty(1, 1, num_bytes, inner_ar_width))
 
         # Backbone blocks
         norm_layer = partial(nn.LayerNorm, eps=1e-6)
@@ -45,43 +65,50 @@ class ARHead_gmm(nn.Module):
         
         # Model head
         self.head_nm = AdaLNBeforeHead(inner_ar_width, decoder_embed_dim, norm_layer=norm_layer)
-        self.head = nn.Linear(inner_ar_width, 2*self.num_gaussians + self.num_gaussians) # mean and logvar
+        self.head = nn.Linear(inner_ar_width, self.vocabulary_size)
 
         self.init_weights()
 
-    def extract_gmm(self, pred):
-        weight = pred[:, :, -self.num_gaussians:].softmax(dim=-1)
-        mu = pred[:, :, :self.num_gaussians]
-        logvar = pred[:, :, self.num_gaussians: 2 * self.num_gaussians]
+        self.byte_converter = ByteConverter()
+        self.loss_func = nn.CrossEntropyLoss(reduction='none')
 
-        return weight, mu, logvar
+        self.mask_for_byte0 = [float('-inf') if 66 <= i < 128 or i >= 194 else 0
+                               for i in range(self.vocabulary_size)]
+        self.mask_for_byte0 = torch.tensor(self.mask_for_byte0).cuda().reshape(1, 1, self.vocabulary_size)
  
     def forward(self, z, target, mask=None):
         bsz = z.shape[0]
+
+        # Convert target to byte representation
+        target = self.byte_converter.feature2byte(target)  # [bsz, token_embed_dim, num_bytes]
+
+        # Construct inputs
+        inp = torch.split(target, 1, dim=-1)  # [bsz, token_embed_dim, 1] * num_bytes
+        inp = [word_emb(x) for word_emb, x in zip(self.word_embed, inp)]
+        inp = torch.cat(inp, dim=2)  # [bsz, token_embed_dim, num_bytes, inner_ar_width]
+        inp = inp + self.level_embed.expand(bsz, -1, -1, -1)  # [bsz, token_embed_dim, num_bytes, inner_ar_width]
+        inp = inp.reshape(bsz, self.token_embed_dim * self.num_bytes, self.inner_ar_width)
+
         start = self.cond_proj(z).unsqueeze(1) + self.start_token.expand(bsz, 1, -1)
 
-        x = torch.cat((start, self.input_proj(target[:, :-1].unsqueeze(-1))), dim=1)
+        x = torch.cat((start, inp[:, :-1]), dim=1)
         x = x + self.pos_embedding.expand(bsz, -1, -1)
 
         for b in self.blocks:
             x = b(x=x, cond_BD=z, attn_bias=None, causal=True)
         x = self.head(self.head_nm(x, z))
 
-        # Compute loss
-        weight, mu, logvar = self.extract_gmm(x)
+        x = x.reshape(bsz, self.token_embed_dim, self.num_bytes, self.vocabulary_size)
 
-        # Multi-variate Gaussian likelihood
-        diff = target.unsqueeze(-1) - mu  # [bsz*seq_len, token_embed_dim, num_gaussians]
-        log_likelihood = -0.5 * (diff**2 / logvar.exp() + logvar)  # [bsz*seq_len, token_embed_dim, num_gaussians]
-        log_likelihood = torch.logsumexp(torch.log(weight) + log_likelihood, dim=-1)  # [bsz*seq_len, token_embed_dim]
-
-        nll = -log_likelihood.sum(-1) # Calculate NLL loss
+        # Cross entropy loss
+        loss = self.loss_func(x.reshape(-1, self.vocabulary_size), target.flatten())
+        loss = loss.reshape(bsz, -1).mean(-1)
         if mask is not None:
-            nll = (nll * mask).sum() / mask.sum()
+            loss = (loss * mask).sum() / mask.sum()
         else:
-            nll = nll.mean()
+            loss = loss.mean()
 
-        return nll
+        return loss
 
     def sample(self, z, temperature=1.0, cfg=1.0, top_p=0.99):
         bsz = z.shape[0]
@@ -93,73 +120,32 @@ class ARHead_gmm(nn.Module):
         res = []
 
         for i in range(self.token_embed_dim):
-            x = x + self.pos_embedding[:, i:i+1].expand(bsz, 1, -1)
-            for b in self.blocks:
-                x = b(x=x, cond_BD=z, attn_bias=None, causal=False)
-            x = self.head(self.head_nm(x, z))
+            for byte in range(self.num_bytes):
+                x = x + self.level_embed[:, :, byte].expand(bsz, 1, -1)
+                x = x + self.pos_embedding[:, i:i+1].expand(bsz, 1, -1)
 
-            weight, mu, logvar = self.extract_gmm(x)
+                for b in self.blocks:
+                    x = b(x=x, cond_BD=z, attn_bias=None, causal=False)
+                x = self.head(self.head_nm(x, z))
 
-            if cfg == 1.0:
-                x = self.sample_from_gmm(weight, mu, logvar, temperature=temperature, num_samples=1)
-                x = x[0]
-                # ll = self.get_log_likelihood(x, weight, mu, logvar)
+                # Sample from the multinomial distribution
+                if byte == 0:
+                    x += self.mask_for_byte0
 
-                # # Get the top p of the samples
-                # prob = ll.permute(1, 2, 0).softmax(dim=-1)
-                # sorted_prob, sorted_idx = torch.sort(prob, dim=-1, descending=True)
-                # sorted_idx = sorted_idx[:, :, :int(100 * top_p)]
+                x = x.squeeze().softmax(dim=-1)
+                x = torch.multinomial(x, 1)
 
-                # x = torch.gather(x.permute(1, 2, 0), -1, sorted_idx)
-                # prob = torch.gather(prob, -1, sorted_idx)
-                # prob = prob / prob.sum(dim=-1, keepdim=True)
+                res.append(x)
 
-                # selected = torch.distributions.Categorical(prob).sample()
-                # x = torch.gather(x, -1, selected.unsqueeze(-1)).squeeze(-1)
-            else:
-                half_bsz = len(x) // 2
-                x = self.sample_from_gmm(weight[:half_bsz], mu[:half_bsz], logvar[:half_bsz], 
-                                         temperature=temperature, num_samples=1000)
-                ll_w_c = self.get_log_likelihood(x, weight[:half_bsz], mu[:half_bsz], logvar[:half_bsz])
-                ll_wo_c = self.get_log_likelihood(x, weight[half_bsz:], mu[half_bsz:], logvar[half_bsz:])
-                ll = (ll_w_c - ll_wo_c) * (cfg - 1.)
-
-                x = x.permute(1, 2, 0)
-                prob = ll.permute(1, 2, 0).softmax(dim=-1)
-                selected = torch.distributions.Categorical(prob).sample()
-                x = torch.gather(x, -1, selected.unsqueeze(-1)).squeeze(-1)
-                x = torch.cat([x, x], dim=0)
-
-            res.append(x)
-
-            x = self.input_proj(x.unsqueeze(-1))
+                x = self.word_embed[byte](x)
         
         for b in self.blocks: b.attn.kv_caching(False)
         res = torch.cat(res, dim=1)
+        res = res.reshape(bsz, self.token_embed_dim, self.num_bytes)
+        res = self.byte_converter.byte2feature(res)
 
         return res
-    
-    def sample_from_gmm(self, weight, mu, logvar, temperature=1.0, num_samples=1):
-        sample_shape = [num_samples, mu.size(0), mu.size(1), mu.size(2)]
 
-        # Sample from the Gaussian Mixture Model
-        mixture = torch.distributions.Categorical(weight)
-        idx = mixture.sample((num_samples,))
-
-        eps = torch.randn(sample_shape, device=mu.device)
-        std = logvar.exp().sqrt() / temperature
-        sample = eps * std.unsqueeze(0) + mu.unsqueeze(0)  # [num_samples, bsz*seq_len, token_embed_dim, num_gaussians]
-
-        sample = sample.gather(-1, idx.unsqueeze(-1)).squeeze(-1)
-
-        return sample
-    
-    def get_log_likelihood(self, x, weight, mu, logvar):
-        diff = x.unsqueeze(-1) - mu.unsqueeze(0)  # [num_samples, bsz*seq_len, token_embed_dim, num_gaussians]
-        log_likelihood = -0.5 * (diff**2 / logvar.unsqueeze(0).exp() + logvar.unsqueeze(0) + math.log(2 * pi))
-        log_likelihood = torch.logsumexp(torch.log(weight.unsqueeze(0)) + log_likelihood, dim=-1)
-
-        return log_likelihood
 
     def init_weights(self, init_adaln=0.5, init_adaln_gamma=1e-5, init_head=0.02, init_std=0.02, conv_std_or_gain=0.02):
         nn.init.trunc_normal_(self.start_token.data, mean=0, std=init_std)
@@ -206,11 +192,10 @@ class ARHead_gmm(nn.Module):
                 nn.init.ones_(sab.ffn.fcg.bias)
                 nn.init.trunc_normal_(sab.ffn.fcg.weight, std=1e-5)
             if hasattr(sab, 'ada_lin'):
-                sab.ada_lin[-1].weight.data[2*self.width:].mul_(init_adaln)
-                sab.ada_lin[-1].weight.data[:2*self.width].mul_(init_adaln_gamma)
+                sab.ada_lin[-1].weight.data[2*self.inner_ar_width:].mul_(init_adaln)
+                sab.ada_lin[-1].weight.data[:2*self.inner_ar_width].mul_(init_adaln_gamma)
                 if hasattr(sab.ada_lin[-1], 'bias') and sab.ada_lin[-1].bias is not None:
                     sab.ada_lin[-1].bias.data.zero_()
             elif hasattr(sab, 'ada_gss'):
                 sab.ada_gss.data[:, :, 2:].mul_(init_adaln)
                 sab.ada_gss.data[:, :, :2].mul_(init_adaln_gamma)
-   

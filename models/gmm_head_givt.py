@@ -51,8 +51,7 @@ class GMMHead(nn.Module):
         assert temperature == 1.0, "Temperature is not supported for GMM sampling."
         assert cfg == 1.0, "CFG is not supported for GMM sampling."
 
-        with torch.cuda.amp.autocast(dtype=torch.float32):
-            pred = self.gmm_predictor(z)
+        pred = self.gmm_predictor(z)
         weight, mu, var = self.extract_gmm(pred)
         x = self.sample_from_gmm(weight, mu, var)
 

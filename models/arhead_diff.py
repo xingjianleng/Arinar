@@ -12,33 +12,34 @@ from diffusion import create_diffusion
 
 
 class ARHead_diff(nn.Module):
-    def __init__(self, num_gaussians, token_embed_dim, decoder_embed_dim, width=768, depth=1, num_sampling_steps='100', diffloss_w=1024, diffloss_d=6):
+    def __init__(self, num_gaussians, token_embed_dim, decoder_embed_dim, inner_ar_width=768, 
+                 inner_ar_depth=1, num_sampling_steps='100', head_width=1024, head_depth=6):
         super(ARHead_diff, self).__init__()
         self.num_gaussians = num_gaussians
         self.token_embed_dim = token_embed_dim
-        self.width = width
+        self.width = inner_ar_width
         
         # Input projection
-        self.input_proj = nn.Linear(1, width)
-        self.cond_proj = nn.Linear(decoder_embed_dim, width)
+        self.input_proj = nn.Linear(1, inner_ar_width)
+        self.cond_proj = nn.Linear(decoder_embed_dim, inner_ar_width)
 
         # Start token and position embedding
-        self.start_token = nn.Parameter(torch.empty(1, 1, width))
-        self.pos_embedding = nn.Parameter(torch.empty(1, token_embed_dim, width))
+        self.start_token = nn.Parameter(torch.empty(1, 1, inner_ar_width))
+        self.pos_embedding = nn.Parameter(torch.empty(1, token_embed_dim, inner_ar_width))
 
         # Backbone blocks
         norm_layer = partial(nn.LayerNorm, eps=1e-6)
         self.drop_path_rate = 0.
-        dpr = [x.item() for x in torch.linspace(0, self.drop_path_rate, depth)]  # stochastic depth decay rule (linearly increasing)
+        dpr = [x.item() for x in torch.linspace(0, self.drop_path_rate, inner_ar_depth)]  # stochastic depth decay rule (linearly increasing)
         self.blocks = nn.ModuleList([
             AdaLNSelfAttn(
                 cond_dim=decoder_embed_dim,
-                block_idx=block_idx, embed_dim=width, norm_layer=norm_layer, num_heads=16, mlp_ratio=4.,
+                block_idx=block_idx, embed_dim=inner_ar_width, norm_layer=norm_layer, num_heads=16, mlp_ratio=4.,
                 drop=0., attn_drop=0., drop_path=dpr[block_idx], last_drop_p=0 if block_idx == 0 else dpr[block_idx-1],
                 attn_l2_norm=False, shared_aln=False,
                 flash_if_available=True, fused_if_available=True,
             )
-            for block_idx in range(depth)
+            for block_idx in range(inner_ar_depth)
         ])
         
         fused_add_norm_fns = [b.fused_add_norm_fn is not None for b in self.blocks]
@@ -48,10 +49,10 @@ class ARHead_diff(nn.Module):
 
         self.net = SimpleMLPAdaLN(
             in_channels=1,  # feature-by-feature diffusion
-            model_channels=diffloss_w,
+            model_channels=head_width,
             out_channels=1 * 2,  # for vlb loss
-            z_channels=width,
-            num_res_blocks=diffloss_d,  # hacking
+            z_channels=inner_ar_width,
+            num_res_blocks=head_depth,  # hacking
         )
 
         self.train_diffusion = create_diffusion(timestep_respacing="", noise_schedule="cosine")

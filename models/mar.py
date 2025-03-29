@@ -14,6 +14,7 @@ from models.arhead_gmm import ARHead_gmm
 from models.arhead_diff import ARHead_diff
 from models.gmm_head_givt import GMMHead
 from models.gmm_head_cov import GMMCovHead
+from models.arhead_byte import ARHead_byte
 
 
 def mask_by_order(mask_len, order, bsz, seq_len):
@@ -39,8 +40,10 @@ class MAR(nn.Module):
                  num_gaussians=1,
                  grad_checkpointing=False,
                  head_type="ar_gmm",
+                 inner_ar_width=1024,
+                 inner_ar_depth=1,
                  head_width=1024,
-                 head_depth=1,
+                 head_depth=6,
                  **kwargs
                  ):
         super().__init__()
@@ -99,12 +102,16 @@ class MAR(nn.Module):
         # MAR head specifics
         if head_type == "ar_gmm":
             self.arhead = ARHead_gmm(num_gaussians=num_gaussians, token_embed_dim=self.token_embed_dim,
-                                    decoder_embed_dim=decoder_embed_dim, width=head_width,
-                                    depth=head_depth)
+                                    decoder_embed_dim=decoder_embed_dim, inner_ar_width=inner_ar_width,
+                                    inner_ar_depth=inner_ar_depth, head_width=head_width, head_depth=head_depth)
         elif head_type == "ar_diff_loss":
             self.arhead = ARHead_diff(num_gaussians=num_gaussians, token_embed_dim=self.token_embed_dim,
-                                    decoder_embed_dim=decoder_embed_dim, width=head_width,
-                                    depth=head_depth, **kwargs)
+                                    decoder_embed_dim=decoder_embed_dim, inner_ar_width=inner_ar_width,
+                                    inner_ar_depth=inner_ar_depth, head_width=head_width, head_depth=head_depth, **kwargs)
+        elif head_type == "ar_byte":
+            self.arhead = ARHead_byte(num_bytes=4, token_embed_dim=self.token_embed_dim,
+                                    decoder_embed_dim=decoder_embed_dim, inner_ar_width=inner_ar_width,
+                                    inner_ar_depth=inner_ar_depth, head_width=head_width, head_depth=head_depth)
         elif head_type == "gmm_wo_ar":
             # The arhead name is misleading, it is actually a GMM head without AR
             self.arhead = GMMHead(num_gaussians=num_gaussians, token_embed_dim=self.token_embed_dim,
@@ -149,7 +156,7 @@ class MAR(nn.Module):
         h_, w_ = h // p, w // p
 
         x = x.reshape(bsz, c, h_, p, w_, p)
-        x = torch.einsum('nchpwq->nhwcpq', x)
+        x = x.permute(0,2,4,1,3,5)  # torch.einsum('nchpwq->nhwcpq', x)
         x = x.reshape(bsz, h_ * w_, c * p ** 2)
         return x  # [n, l, d]
 
