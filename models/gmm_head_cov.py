@@ -110,7 +110,8 @@ class GMMCovHead(nn.Module):
         return nll + rec_loss
 
     def sample(self, z, num_steps=100, temperature=1.0, cfg=1.0):
-        pred = self.net(z)
+        with torch.cuda.amp.autocast(dtype=torch.float32):
+            pred = self.net(z)
         weight, mu, L = self.extract_gmm(pred)
         x0 = self.sample_from_gmm(weight, mu, L)
 
