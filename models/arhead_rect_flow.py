@@ -8,13 +8,12 @@ from torch.utils.checkpoint import checkpoint
 
 from models.adaln import AdaLNSelfAttn
 from models.cond_mlp import SimpleMLPAdaLN
-from diffusion import create_diffusion
 
 
-class ARHead_diff(nn.Module):
+class ARHead_rect_flow(nn.Module):
     def __init__(self, token_embed_dim, decoder_embed_dim, inner_ar_width=768, 
-                 inner_ar_depth=1, num_sampling_steps='100', head_width=1024, head_depth=6):
-        super(ARHead_diff, self).__init__()
+                 inner_ar_depth=1, head_width=1024, head_depth=6):
+        super(ARHead_rect_flow, self).__init__()
         self.token_embed_dim = token_embed_dim
         self.width = inner_ar_width
         
@@ -49,13 +48,10 @@ class ARHead_diff(nn.Module):
         self.net = SimpleMLPAdaLN(
             in_channels=1,  # feature-by-feature diffusion
             model_channels=head_width,
-            out_channels=1 * 2,  # for vlb loss
+            out_channels=1,
             z_channels=inner_ar_width,
             num_res_blocks=head_depth,  # hacking
         )
-
-        self.train_diffusion = create_diffusion(timestep_respacing="", noise_schedule="cosine")
-        self.gen_diffusion = create_diffusion(timestep_respacing=num_sampling_steps, noise_schedule="cosine")
 
  
     def forward(self, z, target, mask=None):
@@ -71,15 +67,21 @@ class ARHead_diff(nn.Module):
         x = x.reshape(-1, self.width)
         target = target.reshape(-1, 1)
 
-        t = torch.randint(0, self.train_diffusion.num_timesteps, (target.shape[0],), device=target.device)
-        model_kwargs = dict(c=x)
-        loss_dict = self.train_diffusion.training_losses(self.net, target, t, model_kwargs)
-        loss = loss_dict["loss"].reshape(bsz, self.token_embed_dim).mean(-1)
-        if mask is not None:
-            loss = (loss * mask).sum() / mask.sum()
-        return loss.mean()
+        x0 = torch.randn_like(target)
+        x1 = target
+        t = torch.rand(len(x0), device=x0.device)
+        xt = t[:, None] * x1 + (1-t[:, None]) * x0
 
-    def sample(self, z, temperature=1.0, cfg=1.0, top_p=0.99):
+        velocity = self.net(xt, t, x)
+
+        y = x1 - x0
+        rec_loss = (velocity - y).pow(2).reshape(bsz, self.token_embed_dim).mean(dim=-1)
+        if mask is not None:
+            rec_loss = (rec_loss * mask).sum() / mask.sum()
+
+        return rec_loss
+
+    def sample(self, z, num_steps=100, temperature=1.0, cfg=1.0, top_p=0.99):
         bsz = z.shape[0]
 
         start = self.cond_proj(z).unsqueeze(1) + self.start_token.expand(bsz, 1, -1)
@@ -92,25 +94,21 @@ class ARHead_diff(nn.Module):
             x = x + self.pos_embedding[:, i:i+1].expand(bsz, 1, -1)
             for b in self.blocks:
                 x = b(x=x, cond_BD=z, attn_bias=None, causal=False)
+            x = x.squeeze(1)
 
-            if not cfg == 1.0:
-                noise = torch.randn(x.shape[0] // 2, 1).cuda()
-                noise = torch.cat([noise, noise], dim=0)
-                model_kwargs = dict(c=x, cfg_scale=cfg)
-                sample_fn = self.net.forward_with_cfg
-            else:
-                noise = torch.randn(bsz, 1).cuda()
-                model_kwargs = dict(c=x.squeeze(1))
-                sample_fn = self.net.forward
+            x_next = torch.randn(bsz, 1, device=z.device)
+            t_steps = torch.linspace(0, 1, num_steps+1, dtype=torch.float32)
 
-            sampled_token_latent = self.gen_diffusion.p_sample_loop(
-                sample_fn, noise.shape, noise, clip_denoised=False, model_kwargs=model_kwargs, progress=False,
-                temperature=temperature
-            )
+            for i, (t_cur, t_next) in enumerate(zip(t_steps[:-1], t_steps[1:])):
+                x_cur = x_next
+                time_input = torch.ones(x_cur.size(0)).to(device=z.device, dtype=torch.float32) * t_cur
+                with torch.cuda.amp.autocast(dtype=torch.float32):
+                    d_cur = self.net(x_cur, time_input, x)
+                x_next = x_cur + (t_next - t_cur) * d_cur
 
-            res.append(sampled_token_latent)
+            res.append(x_next)
 
-            x = self.input_proj(sampled_token_latent.unsqueeze(-1))
+            x = self.input_proj(x_next.unsqueeze(-1))
         
         for b in self.blocks: b.attn.kv_caching(False)
         res = torch.cat(res, dim=1)
