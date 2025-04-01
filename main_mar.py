@@ -94,7 +94,8 @@ def get_args_parser():
                         help='projection dropout')
     parser.add_argument('--buffer_size', type=int, default=64)
     # Second layer AR parameters
-    parser.add_argument('--head_type', type=str, choices=['ar_gmm', 'ar_diff_loss', 'gmm_wo_ar', 'gmm_cov_wo_ar', 'ar_byte'], 
+    parser.add_argument('--head_type', type=str, 
+                        # choices=['ar_gmm', 'ar_diff_loss', 'gmm_wo_ar', 'gmm_cov_wo_ar', 'ar_byte'], 
                         default='ar_gmm', help='head type (default: ar_gmm)')
     parser.add_argument('--num_gaussians', type=int, default=1)
     parser.add_argument('--inner_ar_width', type=int, default=1024)
