@@ -132,12 +132,13 @@ class ARHead_byte(nn.Module):
 
         for i in range(self.token_embed_dim):
             for byte in range(self.num_bytes):
-                x = x + self.level_embed[:, :, byte].expand(bsz, 1, -1)
-                x = x + self.pos_embedding[:, i:i+1].expand(bsz, 1, -1)
+                x = x + self.level_embed(self.loc_ids[:, byte:byte+1]).expand(bsz, 1, -1)
+                pos = i * self.num_bytes + byte
+                x = x + self.pos_embedding[:, pos:pos+1].expand(bsz, 1, -1)
 
                 for b in self.blocks:
                     x = b(x=x, cond_BD=z, attn_bias=None, causal=False)
-                x = self.head(self.head_nm(x, z))
+                x = self.head(self.head_nm(x, z, self.loc_ids[:, byte:byte+1]))
 
                 # Sample from the multinomial distribution
                 if byte == 0:
