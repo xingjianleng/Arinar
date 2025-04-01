@@ -1,12 +1,13 @@
 import math
 from math import pi
+import pdb
 from functools import partial
 
 import torch
 import torch.nn as nn
 from torch.utils.checkpoint import checkpoint
 
-from models.adaln import AdaLNSelfAttn, AdaLNBeforeHead
+from models.adaln import AdaLNSelfAttn, AdaLNBeforeHead_W_Loc
 
 
 class ByteConverter():
@@ -43,7 +44,7 @@ class ARHead_byte(nn.Module):
         # Start token and position embedding
         self.start_token = nn.Parameter(torch.empty(1, 1, inner_ar_width))
         self.pos_embedding = nn.Parameter(torch.empty(1, token_embed_dim * num_bytes, inner_ar_width))
-        self.level_embed = nn.Parameter(torch.empty(1, 1, num_bytes, inner_ar_width))
+        self.level_embed = nn.Embedding(num_bytes, inner_ar_width)
 
         # Backbone blocks
         norm_layer = partial(nn.LayerNorm, eps=1e-6)
@@ -64,7 +65,7 @@ class ARHead_byte(nn.Module):
         self.using_fused_add_norm_fn = any(fused_add_norm_fns)
         
         # Model head
-        self.head_nm = AdaLNBeforeHead(inner_ar_width, decoder_embed_dim, norm_layer=norm_layer)
+        self.head_nm = AdaLNBeforeHead_W_Loc(inner_ar_width, decoder_embed_dim, norm_layer, num_bytes)
         self.head = nn.Linear(inner_ar_width, self.vocabulary_size)
 
         self.init_weights()
@@ -74,7 +75,8 @@ class ARHead_byte(nn.Module):
 
         self.mask_for_byte0 = [float('-inf') if 66 <= i < 128 or i >= 194 else 0
                                for i in range(self.vocabulary_size)]
-        self.mask_for_byte0 = torch.tensor(self.mask_for_byte0).cuda().reshape(1, 1, self.vocabulary_size)
+        self.mask_for_byte0 = torch.tensor(self.mask_for_byte0, device="cuda").reshape(1, 1, self.vocabulary_size)
+        self.loc_ids = torch.tensor(range(num_bytes), device="cuda").unsqueeze(0).repeat(1, self.token_embed_dim)
  
     def forward(self, z, target, mask=None):
         bsz = z.shape[0]
@@ -86,19 +88,22 @@ class ARHead_byte(nn.Module):
         inp = torch.split(target, 1, dim=-1)  # [bsz, token_embed_dim, 1] * num_bytes
         inp = [word_emb(x) for word_emb, x in zip(self.word_embed, inp)]
         inp = torch.cat(inp, dim=2)  # [bsz, token_embed_dim, num_bytes, inner_ar_width]
-        inp = inp + self.level_embed.expand(bsz, -1, -1, -1)  # [bsz, token_embed_dim, num_bytes, inner_ar_width]
         inp = inp.reshape(bsz, self.token_embed_dim * self.num_bytes, self.inner_ar_width)
 
         start = self.cond_proj(z).unsqueeze(1) + self.start_token.expand(bsz, 1, -1)
 
-        x = torch.cat((start, inp[:, :-1]), dim=1)
-        x = x + self.pos_embedding.expand(bsz, -1, -1)
+        level_pos_emb = self.level_embed(self.loc_ids).expand(bsz, -1, -1)
+        x = torch.cat((start, inp[:, :-1]), dim=1) + level_pos_emb + self.pos_embedding.expand(bsz, -1, -1)
 
         for b in self.blocks:
             x = b(x=x, cond_BD=z, attn_bias=None, causal=True)
-        x = self.head(self.head_nm(x, z))
+        print("Before head:", x.max().item(), x.min().item())
+        x = self.head(self.head_nm(x, z, self.loc_ids))
+        print("After head:", x.max().item(), x.min().item())
 
         x = x.reshape(bsz, self.token_embed_dim, self.num_bytes, self.vocabulary_size)
+        print(x[0][0])
+        print(x.softmax(-1)[0][0])
 
         # Cross entropy loss
         loss = self.loss_func(x.reshape(-1, self.vocabulary_size), target.flatten())
@@ -107,6 +112,12 @@ class ARHead_byte(nn.Module):
             loss = (loss * mask).sum() / mask.sum()
         else:
             loss = loss.mean()
+
+        # print(x.softmax(-1)[0])
+        # print(x.softmax(-1)[0].max(-1), x.softmax(-1)[0].min(-1))
+        # print("Loss:", loss.item())
+        # if torch.isnan(loss).any():
+        #     pdb.set_trace()
 
         return loss
 
@@ -178,7 +189,7 @@ class ARHead_byte(nn.Module):
                 self.head[-1].weight.data.mul_(init_head)
                 self.head[-1].bias.data.zero_()
         
-        if isinstance(self.head_nm, AdaLNBeforeHead):
+        if isinstance(self.head_nm, AdaLNBeforeHead_W_Loc):
             self.head_nm.ada_lin[-1].weight.data.mul_(init_adaln)
             if hasattr(self.head_nm.ada_lin[-1], 'bias') and self.head_nm.ada_lin[-1].bias is not None:
                 self.head_nm.ada_lin[-1].bias.data.zero_()

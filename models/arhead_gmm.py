@@ -6,12 +6,12 @@ import torch
 import torch.nn as nn
 from torch.utils.checkpoint import checkpoint
 
-from models.adaln import AdaLNSelfAttn, AdaLNBeforeHead
+from models.adaln import AdaLNSelfAttn, AdaLNBeforeHead, AdaLNBeforeHead_W_Loc
 
 
 class ARHead_gmm(nn.Module):
     def __init__(self, num_gaussians, token_embed_dim, decoder_embed_dim, 
-                 inner_ar_width=768, inner_ar_depth=1, head_width=768, head_depth=1):
+                 inner_ar_width=768, inner_ar_depth=1, head_width=768, head_depth=1, pos_emb_for_head=False):
         super(ARHead_gmm, self).__init__()
         self.num_gaussians = num_gaussians
         self.token_embed_dim = token_embed_dim
@@ -44,7 +44,14 @@ class ARHead_gmm(nn.Module):
         self.using_fused_add_norm_fn = any(fused_add_norm_fns)
         
         # Model head
-        self.head_nm = AdaLNBeforeHead(inner_ar_width, decoder_embed_dim, norm_layer=norm_layer)
+        if pos_emb_for_head:
+            self.head_nm = AdaLNBeforeHead_W_Loc(inner_ar_width, decoder_embed_dim, norm_layer, token_embed_dim)
+            self.loc_ids = torch.tensor(range(token_embed_dim), device="cuda").unsqueeze(0)
+        else:
+            self.head_nm = AdaLNBeforeHead(inner_ar_width, decoder_embed_dim, norm_layer=norm_layer)
+            self.loc_ids = None
+
+        self.pos_emb_for_head = pos_emb_for_head
         self.head = nn.Linear(inner_ar_width, 2*self.num_gaussians + self.num_gaussians) # mean and logvar
 
         self.init_weights()
@@ -65,7 +72,10 @@ class ARHead_gmm(nn.Module):
 
         for b in self.blocks:
             x = b(x=x, cond_BD=z, attn_bias=None, causal=True)
-        x = self.head(self.head_nm(x, z))
+        if self.pos_emb_for_head:
+            x = self.head(self.head_nm(x, z, self.loc_ids))
+        else:
+            x = self.head(self.head_nm(x, z))
 
         # Compute loss
         weight, mu, logvar = self.extract_gmm(x)

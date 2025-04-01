@@ -54,7 +54,7 @@ def get_args_parser():
     parser.add_argument('--temperature', default=1.0, type=float)
     parser.add_argument('--label_drop_prob', default=0.1, type=float)
     parser.add_argument('--eval_freq', type=int, default=40, help='evaluation frequency')
-    parser.add_argument('--save_last_freq', type=int, default=5, help='save last frequency')
+    parser.add_argument('--save_last_freq', type=int, default=1, help='save last frequency')
     parser.add_argument('--online_eval', action='store_true')
     parser.add_argument('--evaluate', action='store_true')
     parser.add_argument('--eval_bsz', type=int, default=128, help='generation batch size')
@@ -102,6 +102,7 @@ def get_args_parser():
     parser.add_argument('--head_width', type=int, default=1024)
     parser.add_argument('--head_depth', type=int, default=6)
     parser.add_argument('--num_sampling_steps', type=str, default="100")
+    parser.add_argument('--pos_emb_for_head', action='store_true', help='use positional embedding for model head')
 
     # Dataset parameters
     parser.add_argument('--data_path', default='./data/imagenet', type=str,
@@ -211,6 +212,8 @@ def main(args):
         kwargs = {}
     if args.enc_dec_depth > 0:
         kwargs["enc_dec_depth"] = args.enc_dec_depth
+    if args.pos_emb_for_head:
+        kwargs["pos_emb_for_head"] = args.pos_emb_for_head
 
     if args.model.startswith('mar'):
         model = mar.__dict__[args.model](
