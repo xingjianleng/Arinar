@@ -81,7 +81,7 @@ class ARHead_rect_flow(nn.Module):
 
         return rec_loss
 
-    def sample(self, z, num_steps=100, temperature=1.0, cfg=1.0, top_p=0.99):
+    def sample(self, z, num_steps=50, temperature=1.0, cfg=1.0, top_p=0.99):
         bsz = z.shape[0]
 
         start = self.cond_proj(z).unsqueeze(1) + self.start_token.expand(bsz, 1, -1)
