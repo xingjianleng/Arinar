@@ -15,6 +15,7 @@ from models.arhead_diff import ARHead_diff
 from models.gmm_head_givt import GMMHead
 from models.gmm_head_cov import GMMCovHead
 from models.arhead_byte import ARHead_byte
+from models.arhead_rect_flow import ARHead_rect_flow
 
 
 def mask_by_order(mask_len, order, bsz, seq_len):
@@ -103,9 +104,14 @@ class MAR(nn.Module):
         if head_type == "ar_gmm":
             self.arhead = ARHead_gmm(num_gaussians=num_gaussians, token_embed_dim=self.token_embed_dim,
                                     decoder_embed_dim=decoder_embed_dim, inner_ar_width=inner_ar_width,
-                                    inner_ar_depth=inner_ar_depth, head_width=head_width, head_depth=head_depth)
+                                    inner_ar_depth=inner_ar_depth, head_width=head_width, head_depth=head_depth,
+                                    pos_emb_for_head=kwargs.get("pos_emb_for_head", False))
         elif head_type == "ar_diff_loss":
             self.arhead = ARHead_diff(num_gaussians=num_gaussians, token_embed_dim=self.token_embed_dim,
+                                    decoder_embed_dim=decoder_embed_dim, inner_ar_width=inner_ar_width,
+                                    inner_ar_depth=inner_ar_depth, head_width=head_width, head_depth=head_depth, **kwargs)
+        elif head_type == "ar_rect_flow":
+            self.arhead = ARHead_rect_flow(token_embed_dim=self.token_embed_dim,
                                     decoder_embed_dim=decoder_embed_dim, inner_ar_width=inner_ar_width,
                                     inner_ar_depth=inner_ar_depth, head_width=head_width, head_depth=head_depth, **kwargs)
         elif head_type == "ar_byte":

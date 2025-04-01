@@ -94,7 +94,8 @@ def get_args_parser():
                         help='projection dropout')
     parser.add_argument('--buffer_size', type=int, default=64)
     # Second layer AR parameters
-    parser.add_argument('--head_type', type=str, choices=['ar_gmm', 'ar_diff_loss', 'gmm_wo_ar', 'gmm_cov_wo_ar', 'ar_byte'], 
+    parser.add_argument('--head_type', type=str, 
+                        # choices=['ar_gmm', 'ar_diff_loss', 'gmm_wo_ar', 'gmm_cov_wo_ar', 'ar_byte'], 
                         default='ar_gmm', help='head type (default: ar_gmm)')
     parser.add_argument('--num_gaussians', type=int, default=1)
     parser.add_argument('--inner_ar_width', type=int, default=1024)
@@ -102,6 +103,7 @@ def get_args_parser():
     parser.add_argument('--head_width', type=int, default=1024)
     parser.add_argument('--head_depth', type=int, default=6)
     parser.add_argument('--num_sampling_steps', type=str, default="100")
+    parser.add_argument('--pos_emb_for_head', action='store_true', help='use positional embedding for model head')
 
     # Dataset parameters
     parser.add_argument('--data_path', default='./data/imagenet', type=str,
@@ -211,6 +213,8 @@ def main(args):
         kwargs = {}
     if args.enc_dec_depth > 0:
         kwargs["enc_dec_depth"] = args.enc_dec_depth
+    if args.pos_emb_for_head:
+        kwargs["pos_emb_for_head"] = args.pos_emb_for_head
 
     if args.model.startswith('mar'):
         model = mar.__dict__[args.model](

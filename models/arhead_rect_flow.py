@@ -6,14 +6,14 @@ import torch
 import torch.nn as nn
 from torch.utils.checkpoint import checkpoint
 
-from models.adaln import AdaLNSelfAttn, AdaLNBeforeHead, AdaLNBeforeHead_W_Loc
+from models.adaln import AdaLNSelfAttn
+from models.cond_mlp import SimpleMLPAdaLN
 
 
-class ARHead_gmm(nn.Module):
-    def __init__(self, num_gaussians, token_embed_dim, decoder_embed_dim, 
-                 inner_ar_width=768, inner_ar_depth=1, head_width=768, head_depth=1, pos_emb_for_head=False):
-        super(ARHead_gmm, self).__init__()
-        self.num_gaussians = num_gaussians
+class ARHead_rect_flow(nn.Module):
+    def __init__(self, token_embed_dim, decoder_embed_dim, inner_ar_width=768, 
+                 inner_ar_depth=1, head_width=1024, head_depth=6):
+        super(ARHead_rect_flow, self).__init__()
         self.token_embed_dim = token_embed_dim
         self.width = inner_ar_width
         
@@ -43,25 +43,16 @@ class ARHead_gmm(nn.Module):
         fused_add_norm_fns = [b.fused_add_norm_fn is not None for b in self.blocks]
         self.using_fused_add_norm_fn = any(fused_add_norm_fns)
         
-        # Model head
-        if pos_emb_for_head:
-            self.head_nm = AdaLNBeforeHead_W_Loc(inner_ar_width, decoder_embed_dim, norm_layer, token_embed_dim)
-            self.loc_ids = torch.tensor(range(token_embed_dim), device="cuda").unsqueeze(0)
-        else:
-            self.head_nm = AdaLNBeforeHead(inner_ar_width, decoder_embed_dim, norm_layer=norm_layer)
-            self.loc_ids = None
-
-        self.pos_emb_for_head = pos_emb_for_head
-        self.head = nn.Linear(inner_ar_width, 2*self.num_gaussians + self.num_gaussians) # mean and logvar
-
         self.init_weights()
 
-    def extract_gmm(self, pred):
-        weight = pred[:, :, -self.num_gaussians:].softmax(dim=-1)
-        mu = pred[:, :, :self.num_gaussians]
-        logvar = pred[:, :, self.num_gaussians: 2 * self.num_gaussians]
+        self.net = SimpleMLPAdaLN(
+            in_channels=1,  # feature-by-feature diffusion
+            model_channels=head_width,
+            out_channels=1,
+            z_channels=inner_ar_width,
+            num_res_blocks=head_depth,  # hacking
+        )
 
-        return weight, mu, logvar
  
     def forward(self, z, target, mask=None):
         bsz = z.shape[0]
@@ -72,28 +63,25 @@ class ARHead_gmm(nn.Module):
 
         for b in self.blocks:
             x = b(x=x, cond_BD=z, attn_bias=None, causal=True)
-        if self.pos_emb_for_head:
-            x = self.head(self.head_nm(x, z, self.loc_ids))
-        else:
-            x = self.head(self.head_nm(x, z))
+        
+        x = x.reshape(-1, self.width)
+        target = target.reshape(-1, 1)
 
-        # Compute loss
-        weight, mu, logvar = self.extract_gmm(x)
+        x0 = torch.randn_like(target)
+        x1 = target
+        t = torch.rand(len(x0), device=x0.device)
+        xt = t[:, None] * x1 + (1-t[:, None]) * x0
 
-        # Multi-variate Gaussian likelihood
-        diff = target.unsqueeze(-1) - mu  # [bsz*seq_len, token_embed_dim, num_gaussians]
-        log_likelihood = -0.5 * (diff**2 / logvar.exp() + logvar)  # [bsz*seq_len, token_embed_dim, num_gaussians]
-        log_likelihood = torch.logsumexp(torch.log(weight) + log_likelihood, dim=-1)  # [bsz*seq_len, token_embed_dim]
+        velocity = self.net(xt, t, x)
 
-        nll = -log_likelihood.sum(-1) # Calculate NLL loss
+        y = x1 - x0
+        rec_loss = (velocity - y).pow(2).reshape(bsz, self.token_embed_dim).mean(dim=-1)
         if mask is not None:
-            nll = (nll * mask).sum() / mask.sum()
-        else:
-            nll = nll.mean()
+            rec_loss = (rec_loss * mask).sum() / mask.sum()
 
-        return nll
+        return rec_loss
 
-    def sample(self, z, temperature=1.0, cfg=1.0, top_p=0.99):
+    def sample(self, z, num_steps=50, temperature=1.0, cfg=1.0, top_p=0.99):
         bsz = z.shape[0]
 
         start = self.cond_proj(z).unsqueeze(1) + self.start_token.expand(bsz, 1, -1)
@@ -106,43 +94,21 @@ class ARHead_gmm(nn.Module):
             x = x + self.pos_embedding[:, i:i+1].expand(bsz, 1, -1)
             for b in self.blocks:
                 x = b(x=x, cond_BD=z, attn_bias=None, causal=False)
-            x = self.head(self.head_nm(x, z))
+            x = x.squeeze(1)
 
-            weight, mu, logvar = self.extract_gmm(x)
+            x_next = torch.randn(bsz, 1, device=z.device)
+            t_steps = torch.linspace(0, 1, num_steps+1, dtype=torch.float32)
 
-            if cfg == 1.0:
-                x = self.sample_from_gmm(weight, mu, logvar, temperature=temperature, num_samples=1)
-                x = x[0]
-                # ll = self.get_log_likelihood(x, weight, mu, logvar)
+            for i, (t_cur, t_next) in enumerate(zip(t_steps[:-1], t_steps[1:])):
+                x_cur = x_next
+                time_input = torch.ones(x_cur.size(0)).to(device=z.device, dtype=torch.float32) * t_cur
+                with torch.cuda.amp.autocast(dtype=torch.float32):
+                    d_cur = self.net(x_cur, time_input, x)
+                x_next = x_cur + (t_next - t_cur) * d_cur
 
-                # # Get the top p of the samples
-                # prob = ll.permute(1, 2, 0).softmax(dim=-1)
-                # sorted_prob, sorted_idx = torch.sort(prob, dim=-1, descending=True)
-                # sorted_idx = sorted_idx[:, :, :int(100 * top_p)]
+            res.append(x_next)
 
-                # x = torch.gather(x.permute(1, 2, 0), -1, sorted_idx)
-                # prob = torch.gather(prob, -1, sorted_idx)
-                # prob = prob / prob.sum(dim=-1, keepdim=True)
-
-                # selected = torch.distributions.Categorical(prob).sample()
-                # x = torch.gather(x, -1, selected.unsqueeze(-1)).squeeze(-1)
-            else:
-                half_bsz = len(x) // 2
-                x = self.sample_from_gmm(weight[:half_bsz], mu[:half_bsz], logvar[:half_bsz], 
-                                         temperature=temperature, num_samples=1000)
-                ll_w_c = self.get_log_likelihood(x, weight[:half_bsz], mu[:half_bsz], logvar[:half_bsz])
-                ll_wo_c = self.get_log_likelihood(x, weight[half_bsz:], mu[half_bsz:], logvar[half_bsz:])
-                ll = (ll_w_c - ll_wo_c) * (cfg - 1.)
-
-                x = x.permute(1, 2, 0)
-                prob = ll.permute(1, 2, 0).softmax(dim=-1)
-                selected = torch.distributions.Categorical(prob).sample()
-                x = torch.gather(x, -1, selected.unsqueeze(-1)).squeeze(-1)
-                x = torch.cat([x, x], dim=0)
-
-            res.append(x)
-
-            x = self.input_proj(x.unsqueeze(-1))
+            x = self.input_proj(x_next.unsqueeze(-1))
         
         for b in self.blocks: b.attn.kv_caching(False)
         res = torch.cat(res, dim=1)
@@ -171,7 +137,7 @@ class ARHead_gmm(nn.Module):
 
         return log_likelihood
 
-    def init_weights(self, init_adaln=0.5, init_adaln_gamma=1e-5, init_head=0.02, init_std=0.02, conv_std_or_gain=0.02):
+    def init_weights(self, init_adaln=0.5, init_adaln_gamma=1e-5, init_std=0.02, conv_std_or_gain=0.02):
         nn.init.trunc_normal_(self.start_token.data, mean=0, std=init_std)
         nn.init.trunc_normal_(self.pos_embedding.data, mean=0, std=init_std)
 
@@ -193,19 +159,6 @@ class ARHead_gmm(nn.Module):
                 if conv_std_or_gain > 0: nn.init.trunc_normal_(m.weight.data, std=conv_std_or_gain)
                 else: nn.init.xavier_normal_(m.weight.data, gain=-conv_std_or_gain)
                 if with_bias: m.bias.data.zero_()
-        
-        if init_head >= 0:
-            if isinstance(self.head, nn.Linear):
-                self.head.weight.data.mul_(init_head)
-                self.head.bias.data.zero_()
-            elif isinstance(self.head, nn.Sequential):
-                self.head[-1].weight.data.mul_(init_head)
-                self.head[-1].bias.data.zero_()
-        
-        if isinstance(self.head_nm, AdaLNBeforeHead):
-            self.head_nm.ada_lin[-1].weight.data.mul_(init_adaln)
-            if hasattr(self.head_nm.ada_lin[-1], 'bias') and self.head_nm.ada_lin[-1].bias is not None:
-                self.head_nm.ada_lin[-1].bias.data.zero_()
         
         depth = len(self.blocks)
         for block_idx, sab in enumerate(self.blocks):

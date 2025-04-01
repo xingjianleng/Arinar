@@ -12,10 +12,9 @@ from diffusion import create_diffusion
 
 
 class ARHead_diff(nn.Module):
-    def __init__(self, num_gaussians, token_embed_dim, decoder_embed_dim, inner_ar_width=768, 
+    def __init__(self, token_embed_dim, decoder_embed_dim, inner_ar_width=768, 
                  inner_ar_depth=1, num_sampling_steps='100', head_width=1024, head_depth=6):
         super(ARHead_diff, self).__init__()
-        self.num_gaussians = num_gaussians
         self.token_embed_dim = token_embed_dim
         self.width = inner_ar_width
         
