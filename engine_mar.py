@@ -42,6 +42,7 @@ def train_one_epoch(model, vae,
     print_freq = 20
 
     optimizer.zero_grad()
+    loss_nan_counter = 0
 
     if log_writer is not None:
         print('log_dir: {}'.format(log_writer.log_dir))
@@ -71,10 +72,13 @@ def train_one_epoch(model, vae,
         loss_value = loss.item()
 
         if not math.isfinite(loss_value):
-            print("Loss is {}, stopping training".format(loss_value))
-            sys.exit(1)
-
-        loss_scaler(loss, optimizer, clip_grad=args.grad_clip, parameters=model.parameters(), update_grad=True)
+            print("Loss is nan")
+            loss_nan_counter += 1
+            if loss_nan_counter >= 5:
+                print("Loss is nan for 5 iterations in one epoch, exiting")
+                sys.exit(1)
+        else:
+            loss_scaler(loss, optimizer, clip_grad=args.grad_clip, parameters=model.parameters(), update_grad=True)
         optimizer.zero_grad()
 
         torch.cuda.synchronize()
