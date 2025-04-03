@@ -16,6 +16,7 @@ from models.gmm_head_givt import GMMHead
 from models.gmm_head_cov import GMMCovHead
 from models.arhead_byte import ARHead_byte
 from models.arhead_rect_flow import ARHead_rect_flow
+from models.rect_flow import RectFlowHead
 
 
 def mask_by_order(mask_len, order, bsz, seq_len):
@@ -118,6 +119,10 @@ class MAR(nn.Module):
             self.arhead = ARHead_byte(num_bytes=4, token_embed_dim=self.token_embed_dim,
                                     decoder_embed_dim=decoder_embed_dim, inner_ar_width=inner_ar_width,
                                     inner_ar_depth=inner_ar_depth, head_width=head_width, head_depth=head_depth)
+        elif head_type == "rect_flow":
+            self.arhead = RectFlowHead(token_embed_dim=self.token_embed_dim,
+                                    decoder_embed_dim=decoder_embed_dim,
+                                    head_width=head_width, head_depth=head_depth, **kwargs)
         elif head_type == "gmm_wo_ar":
             # The arhead name is misleading, it is actually a GMM head without AR
             self.arhead = GMMHead(num_gaussians=num_gaussians, token_embed_dim=self.token_embed_dim,
