@@ -75,7 +75,9 @@ def get_args_parser():
     parser.add_argument('--warmup_epochs', type=int, default=100, metavar='N',
                         help='epochs to warmup LR')
     parser.add_argument('--ema_rate', default=0.9999, type=float)
-
+    parser.add_argument('--bf16', action='store_true',
+                        help='use bf16 precision instead of fp16')
+    
     # First layer AR parameters
     parser.add_argument('--model_type', type=str, default='mar_large',
                         help='model type (default: mar_large)')
@@ -205,7 +207,7 @@ def main(args):
     for param in vae.parameters():
         param.requires_grad = False
 
-    if args.head_type == "ar_diff_loss":
+    if args.head_type == "ar_diff_loss" or args.head_type == "ar_rect_flow":
         kwargs = {
             "num_sampling_steps": args.num_sampling_steps, 
         }

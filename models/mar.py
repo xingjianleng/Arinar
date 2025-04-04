@@ -17,6 +17,7 @@ from models.gmm_head_cov import GMMCovHead
 from models.arhead_byte import ARHead_byte
 from models.arhead_rect_flow import ARHead_rect_flow
 from models.rect_flow import RectFlowHead
+from models.diffloss import DiffLoss
 
 
 def mask_by_order(mask_len, order, bsz, seq_len):
@@ -123,6 +124,12 @@ class MAR(nn.Module):
             self.arhead = RectFlowHead(token_embed_dim=self.token_embed_dim,
                                     decoder_embed_dim=decoder_embed_dim,
                                     head_width=head_width, head_depth=head_depth, **kwargs)
+        elif head_type == "diff_loss":
+            self.arhead = DiffLoss(token_embed_dim=self.token_embed_dim, 
+                                    decoder_embed_dim=decoder_embed_dim,
+                                    head_width=head_width, head_depth=head_depth,
+                                    num_sampling_steps=kwargs.get("num_sampling_steps", "50"),
+                                    grad_checkpointing=grad_checkpointing)
         elif head_type == "gmm_wo_ar":
             # The arhead name is misleading, it is actually a GMM head without AR
             self.arhead = GMMHead(num_gaussians=num_gaussians, token_embed_dim=self.token_embed_dim,

@@ -143,7 +143,7 @@ class FinalLayer(nn.Module):
 
     def forward(self, x, c):
         shift, scale = self.adaLN_modulation(c).chunk(2, dim=-1)
-        print("XMAX", x.max().item()) 
+        # print("XMAX", x.max().item()) 
         x = modulate(self.norm_final(x), shift, scale)
         x = self.linear(x)
         return x
