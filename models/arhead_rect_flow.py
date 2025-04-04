@@ -11,9 +11,10 @@ from models.cond_mlp import SimpleMLPAdaLN
 
 
 class ARHead_rect_flow(nn.Module):
-    def __init__(self, token_embed_dim, decoder_embed_dim, inner_ar_width=768, 
-                 inner_ar_depth=1, head_width=1024, head_depth=6):
+    def __init__(self, token_embed_dim, decoder_embed_dim, num_sampling_steps="50",
+                 inner_ar_width=768, inner_ar_depth=1, head_width=1024, head_depth=6):
         super(ARHead_rect_flow, self).__init__()
+        self.num_sampling_steps = int(num_sampling_steps)
         self.token_embed_dim = token_embed_dim
         self.width = inner_ar_width
         
@@ -81,7 +82,7 @@ class ARHead_rect_flow(nn.Module):
 
         return rec_loss
 
-    def sample(self, z, num_steps=50, temperature=1.0, cfg=1.0, top_p=0.99):
+    def sample(self, z, temperature=1.0, cfg=1.0, top_p=0.99):
         bsz = z.shape[0]
 
         start = self.cond_proj(z).unsqueeze(1) + self.start_token.expand(bsz, 1, -1)
@@ -97,7 +98,7 @@ class ARHead_rect_flow(nn.Module):
             x = x.squeeze(1)
 
             x_next = torch.randn(bsz, 1, device=z.device)
-            t_steps = torch.linspace(0, 1, num_steps+1, dtype=torch.float32)
+            t_steps = torch.linspace(0, 1, self.num_sampling_steps+1, dtype=torch.float32)
 
             for i, (t_cur, t_next) in enumerate(zip(t_steps[:-1], t_steps[1:])):
                 x_cur = x_next
