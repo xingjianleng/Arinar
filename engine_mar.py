@@ -66,7 +66,7 @@ def train_one_epoch(model, vae,
 
         # forward
         if args.bf16:
-            with torch.cuda.amp.autocast(torch.bfloat16):
+            with torch.cuda.amp.autocast(dtype=torch.bfloat16):
                 loss = model(x, labels)
 
             loss.backward()
@@ -76,21 +76,22 @@ def train_one_epoch(model, vae,
             with torch.cuda.amp.autocast():
                 loss = model(x, labels)
 
-            loss_value = loss.item()
-
-            if not math.isfinite(loss_value):
-                print("Loss is {}, stopping training".format(loss_value))
-                torch.save({
-                    'model': model.state_dict(),
-                    'samples': samples,
-                    'labels': labels,
-                    'x': x,
-                    'optimizer': optimizer.state_dict(),
-                    'epoch': epoch,
-                    'args': args,
-                }, os.path.join(args.output_dir, 'loss_is_nan.pth'))
-                sys.exit(1)
             loss_scaler(loss, optimizer, clip_grad=args.grad_clip, parameters=model.parameters(), update_grad=True)
+
+        loss_value = loss.item()
+
+        if not math.isfinite(loss_value):
+            print("Loss is {}, stopping training".format(loss_value))
+            torch.save({
+                'model': model.state_dict(),
+                'samples': samples,
+                'labels': labels,
+                'x': x,
+                'optimizer': optimizer.state_dict(),
+                'epoch': epoch,
+                'args': args,
+            }, os.path.join(args.output_dir, 'loss_is_nan.pth'))
+            sys.exit(1)
 
         optimizer.zero_grad()
 
