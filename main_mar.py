@@ -79,8 +79,6 @@ def get_args_parser():
                         help='use bf16 precision instead of fp16')
     
     # First layer AR parameters
-    parser.add_argument('--model_type', type=str, default='mar_large',
-                        help='model type (default: mar_large)')
     ## VAR params
 
     ## MAR params
@@ -207,7 +205,7 @@ def main(args):
     for param in vae.parameters():
         param.requires_grad = False
 
-    if args.head_type == "ar_diff_loss" or args.head_type == "ar_rect_flow":
+    if args.head_type == "ar_diff_loss" or args.head_type == "ar_rect_flow" or args.head_type == "diff_loss":
         kwargs = {
             "num_sampling_steps": args.num_sampling_steps, 
         }
