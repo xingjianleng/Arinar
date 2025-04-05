@@ -115,29 +115,7 @@ class ARHead_rect_flow(nn.Module):
         res = torch.cat(res, dim=1)
 
         return res
-    
-    def sample_from_gmm(self, weight, mu, logvar, temperature=1.0, num_samples=1):
-        sample_shape = [num_samples, mu.size(0), mu.size(1), mu.size(2)]
-
-        # Sample from the Gaussian Mixture Model
-        mixture = torch.distributions.Categorical(weight)
-        idx = mixture.sample((num_samples,))
-
-        eps = torch.randn(sample_shape, device=mu.device)
-        std = logvar.exp().sqrt() / temperature
-        sample = eps * std.unsqueeze(0) + mu.unsqueeze(0)  # [num_samples, bsz*seq_len, token_embed_dim, num_gaussians]
-
-        sample = sample.gather(-1, idx.unsqueeze(-1)).squeeze(-1)
-
-        return sample
-    
-    def get_log_likelihood(self, x, weight, mu, logvar):
-        diff = x.unsqueeze(-1) - mu.unsqueeze(0)  # [num_samples, bsz*seq_len, token_embed_dim, num_gaussians]
-        log_likelihood = -0.5 * (diff**2 / logvar.unsqueeze(0).exp() + logvar.unsqueeze(0) + math.log(2 * pi))
-        log_likelihood = torch.logsumexp(torch.log(weight.unsqueeze(0)) + log_likelihood, dim=-1)
-
-        return log_likelihood
-
+ 
     def init_weights(self, init_adaln=0.5, init_adaln_gamma=1e-5, init_std=0.02, conv_std_or_gain=0.02):
         nn.init.trunc_normal_(self.start_token.data, mean=0, std=init_std)
         nn.init.trunc_normal_(self.pos_embedding.data, mean=0, std=init_std)
