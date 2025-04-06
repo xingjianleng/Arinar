@@ -123,10 +123,11 @@ def evaluate(model_without_ddp, vae, ema_params, args, epoch, batch_size=16, log
              use_ema=True):
     model_without_ddp.eval()
     num_steps = args.num_images // (batch_size * misc.get_world_size()) + 1
-    save_folder = os.path.join(args.output_dir, "ariter{}-gnum{}-{}cfg{}-image{}".format(args.num_iter,
+    save_folder = os.path.join(args.output_dir, "ariter{}-gnum{}-{}cfg{}-temp{}-image{}".format(args.num_iter,
                                                                                                      args.num_gaussians,
                                                                                                      args.cfg_schedule,
                                                                                                      cfg,
+                                                                                                     args.temperature,
                                                                                                      args.num_images))
     if use_ema:
         save_folder = save_folder + "_ema"
