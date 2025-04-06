@@ -157,7 +157,7 @@ class ARHead_gmm(nn.Module):
         idx = mixture.sample((num_samples,))
 
         eps = torch.randn(sample_shape, device=mu.device)
-        std = logvar.exp().sqrt() / temperature
+        std = logvar.exp().sqrt() * temperature
         sample = eps * std.unsqueeze(0) + mu.unsqueeze(0)  # [num_samples, bsz*seq_len, token_embed_dim, num_gaussians]
 
         sample = sample.gather(-1, idx.unsqueeze(-1)).squeeze(-1)

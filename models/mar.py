@@ -109,7 +109,7 @@ class MAR(nn.Module):
                                     inner_ar_depth=inner_ar_depth, head_width=head_width, head_depth=head_depth,
                                     pos_emb_for_head=kwargs.get("pos_emb_for_head", False))
         elif head_type == "ar_diff_loss":
-            self.arhead = ARHead_diff(num_gaussians=num_gaussians, token_embed_dim=self.token_embed_dim,
+            self.arhead = ARHead_diff(token_embed_dim=self.token_embed_dim,
                                     decoder_embed_dim=decoder_embed_dim, inner_ar_width=inner_ar_width,
                                     inner_ar_depth=inner_ar_depth, head_width=head_width, head_depth=head_depth, **kwargs)
         elif head_type == "ar_rect_flow":
@@ -356,12 +356,14 @@ class MAR(nn.Module):
             # cfg schedule follow Muse
             if cfg_schedule == "linear":
                 cfg_iter = 1 + (cfg - 1) * (self.seq_len - mask_len[0]) / self.seq_len
+                temp_iter = 1 + (temperature - 1) * (self.seq_len - mask_len[0]) / self.seq_len
             elif cfg_schedule == "constant":
                 cfg_iter = cfg
+                temp_iter = temperature
             else:
                 raise NotImplementedError
 
-            sampled_token_latent = self.arhead.sample(z, temperature=temperature, cfg=cfg_iter)
+            sampled_token_latent = self.arhead.sample(z, temperature=temp_iter, cfg=cfg_iter)
             if not cfg == 1.0:
                 sampled_token_latent, _ = sampled_token_latent.chunk(2, dim=0)  # Remove null class samples
                 mask_to_pred, _ = mask_to_pred.chunk(2, dim=0)

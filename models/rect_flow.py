@@ -6,6 +6,7 @@ from models.cond_mlp import SimpleMLPAdaLN
 
 class RectFlowHead(nn.Module):
     def __init__(self, token_embed_dim, decoder_embed_dim, 
+                 num_sampling_steps,
                  head_width, head_depth):
         super(RectFlowHead, self).__init__()
         self.token_embed_dim = token_embed_dim
@@ -16,6 +17,7 @@ class RectFlowHead(nn.Module):
             z_channels=decoder_embed_dim,
             num_res_blocks=head_depth
         )
+        self.num_sampling_steps = int(num_sampling_steps)
     
     def forward(self, target, z, mask=None):
         # Probability of the target
@@ -33,9 +35,9 @@ class RectFlowHead(nn.Module):
 
         return rec_loss
 
-    def sample(self, z, num_steps=100, temperature=1.0, cfg=1.0):
+    def sample(self, z, temperature=1.0, cfg=1.0):
         x_next = torch.randn(z.size(0), self.token_embed_dim).to(z.device)
-        t_steps = torch.linspace(0, 1, num_steps+1, dtype=torch.float32)
+        t_steps = torch.linspace(0, 1, self.num_sampling_steps+1, dtype=torch.float32)
 
         for i, (t_cur, t_next) in enumerate(zip(t_steps[:-1], t_steps[1:])):
             x_cur = x_next
