@@ -82,7 +82,7 @@ class ARHead_rect_flow(nn.Module):
 
         return rec_loss
 
-    def sample(self, z, temperature=1.0, cfg=1.0, top_p=0.99):
+    def sample(self, z, temperature=1.0, cfg=1.0, top_p=0.99, heun=True):
         bsz = z.shape[0]
 
         start = self.cond_proj(z).unsqueeze(1) + self.start_token.expand(bsz, 1, -1)
@@ -111,6 +111,17 @@ class ARHead_rect_flow(nn.Module):
                     d_cur_cond, d_cur_uncond = d_cur.chunk(2)
                     d_cur = d_cur_uncond + cfg * (d_cur_cond - d_cur_uncond)
                 x_next = x_cur[:x_next.shape[0]] + (t_next - t_cur) * d_cur
+                if heun and (i < self.num_sampling_steps - 1):
+                    if not cfg == 1.0:
+                        model_input = torch.cat([x_next, x_next], dim=0)
+                    else:
+                        model_input = x_next
+                    time_input = torch.ones(model_input.size(0), device=model_input.device, dtype=torch.float32) * t_next
+                    d_prime = self.net(model_input, time_input, x)
+                    if not cfg == 1.0:
+                        d_prime_cond, d_prime_uncond = d_prime.chunk(2)
+                        d_prime = d_prime_uncond + cfg * (d_prime_cond - d_prime_uncond)
+                    x_next = x_cur + (t_next - t_cur) * (0.5 * d_cur + 0.5 * d_prime)
 
             if not cfg == 1.0:
                 x_next = torch.cat([x_next, x_next], dim=0)
