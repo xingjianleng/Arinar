@@ -123,7 +123,8 @@ class MAR(nn.Module):
         elif head_type == "rect_flow":
             self.arhead = RectFlowHead(token_embed_dim=self.token_embed_dim,
                                     decoder_embed_dim=decoder_embed_dim,
-                                    head_width=head_width, head_depth=head_depth, **kwargs)
+                                    num_sampling_steps=kwargs.get("num_sampling_steps", "50"),
+                                    head_width=head_width, head_depth=head_depth)
         elif head_type == "diff_loss":
             self.arhead = DiffLoss(token_embed_dim=self.token_embed_dim, 
                                     decoder_embed_dim=decoder_embed_dim,

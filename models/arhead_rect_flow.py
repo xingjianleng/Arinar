@@ -102,9 +102,11 @@ class ARHead_rect_flow(nn.Module):
 
             for i, (t_cur, t_next) in enumerate(zip(t_steps[:-1], t_steps[1:])):
                 x_cur = x_next
-                time_input = torch.ones(x_cur.size(0)).to(device=z.device, dtype=torch.float32) * t_cur
-                with torch.cuda.amp.autocast(dtype=torch.float32):
-                    d_cur = self.net(x_cur, time_input, x)
+                time_input = torch.ones(x_cur.size(0), device=z.device, dtype=torch.float32) * t_cur
+                d_cur = self.net(x_cur, time_input, x)
+                if not cfg == 1.0:
+                    d_cur_cond, d_cur_uncond = d_cur.chunk(2)
+                    d_cur = d_cur_uncond + cfg * (d_cur_cond - d_cur_uncond)
                 x_next = x_cur + (t_next - t_cur) * d_cur
 
             res.append(x_next)
