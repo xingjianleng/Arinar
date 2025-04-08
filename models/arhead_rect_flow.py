@@ -1,5 +1,5 @@
 import math
-from math import pi
+import numpy as np
 from functools import partial
 
 import torch
@@ -8,6 +8,48 @@ from torch.utils.checkpoint import checkpoint
 
 from models.adaln import AdaLNSelfAttn
 from models.cond_mlp import SimpleMLPAdaLN
+
+
+def expand_t_like_x(t, x_cur):
+    """Function to reshape time t to broadcastable dimension of x
+    Args:
+      t: [batch_dim,], time vector
+      x: [batch_dim,...], data point
+    """
+    dims = [1] * (len(x_cur.size()) - 1)
+    t = t.view(t.size(0), *dims)
+    return t
+
+
+def get_score_from_velocity(vt, xt, t, path_type="linear"):
+    """Wrapper function: transfrom velocity prediction model to score
+    Args:
+        velocity: [batch_dim, ...] shaped tensor; velocity model output
+        x: [batch_dim, ...] shaped tensor; x_t data point
+        t: [batch_dim,] time tensor
+    """
+    t = expand_t_like_x(t, xt)
+    if path_type == "linear":
+        alpha_t, d_alpha_t = t, torch.ones_like(xt, device=xt.device)
+        sigma_t, d_sigma_t = 1 - t, torch.ones_like(xt, device=xt.device) * -1
+    elif path_type == "cosine":
+        alpha_t = torch.cos(t * np.pi / 2)
+        sigma_t = torch.sin(t * np.pi / 2)
+        d_alpha_t = -np.pi / 2 * torch.sin(t * np.pi / 2)
+        d_sigma_t =  np.pi / 2 * torch.cos(t * np.pi / 2)
+    else:
+        raise NotImplementedError
+
+    mean = xt
+    reverse_alpha_ratio = alpha_t / d_alpha_t
+    var = sigma_t**2 - reverse_alpha_ratio * d_sigma_t * sigma_t
+    score = (reverse_alpha_ratio * vt - mean) / var
+
+    return score
+
+
+def compute_diffusion(t, temperature):
+    return 2 * t * temperature
 
 
 class ARHead_rect_flow(nn.Module):
@@ -54,6 +96,9 @@ class ARHead_rect_flow(nn.Module):
             num_res_blocks=head_depth,  # hacking
         )
 
+        self.use_euler_maruyama_sampler = False
+        self.path_type = "linear"
+
  
     def forward(self, z, target, mask=None):
         bsz = z.shape[0]
@@ -82,7 +127,7 @@ class ARHead_rect_flow(nn.Module):
 
         return rec_loss
 
-    def sample(self, z, temperature=1.0, cfg=1.0, top_p=0.99, heun=True):
+    def sample(self, z, temperature=1.0, cfg=1.0, top_p=0.99):
         bsz = z.shape[0]
 
         start = self.cond_proj(z).unsqueeze(1) + self.start_token.expand(bsz, 1, -1)
@@ -97,42 +142,96 @@ class ARHead_rect_flow(nn.Module):
                 x = b(x=x, cond_BD=z, attn_bias=None, causal=False)
             x = x.squeeze(1)
 
-            if cfg == 1.0:
-                x_next = torch.randn(bsz, 1, device=z.device)
+            if self.use_euler_maruyama_sampler:
+                x_next = self.euler_maruyama_sampler(cfg, bsz, x, temperature=temperature)
             else:
-                x_next = torch.randn(bsz // 2, 1, device=z.device)
-            t_steps = torch.linspace(0, 1, self.num_sampling_steps+1, dtype=torch.float32)
+                x_next = self.euler_sampler(cfg, bsz, x)
 
-            for i, (t_cur, t_next) in enumerate(zip(t_steps[:-1], t_steps[1:])):
-                x_cur = x_next if cfg == 1.0 else torch.cat([x_next, x_next], dim=0)
-                time_input = torch.ones(x_cur.size(0), device=z.device, dtype=torch.float32) * t_cur
-                d_cur = self.net(x_cur, time_input, x)
-                if not cfg == 1.0:
-                    d_cur_cond, d_cur_uncond = d_cur.chunk(2)
-                    d_cur = d_cur_uncond + cfg * (d_cur_cond - d_cur_uncond)
-                x_next = x_cur[:x_next.shape[0]] + (t_next - t_cur) * d_cur
-                if heun and (i < self.num_sampling_steps - 1):
-                    if not cfg == 1.0:
-                        model_input = torch.cat([x_next, x_next], dim=0)
-                    else:
-                        model_input = x_next
-                    time_input = torch.ones(model_input.size(0), device=model_input.device, dtype=torch.float32) * t_next
-                    d_prime = self.net(model_input, time_input, x)
-                    if not cfg == 1.0:
-                        d_prime_cond, d_prime_uncond = d_prime.chunk(2)
-                        d_prime = d_prime_uncond + cfg * (d_prime_cond - d_prime_uncond)
-                    x_next = x_cur + (t_next - t_cur) * (0.5 * d_cur + 0.5 * d_prime)
-
-            if not cfg == 1.0:
-                x_next = torch.cat([x_next, x_next], dim=0)
-
-            res.append(x_next)            
+            res.append(x_next)
             x = self.input_proj(x_next.unsqueeze(-1))
         
         for b in self.blocks: b.attn.kv_caching(False)
         res = torch.cat(res, dim=1)
 
         return res
+
+    def euler_sampler(self, cfg, bsz, x):
+        if cfg == 1.0:
+            x_next = torch.randn(bsz, 1, device=x.device)
+        else:
+            x_next = torch.randn(bsz // 2, 1, device=x.device)
+        t_steps = torch.linspace(0, 1, self.num_sampling_steps+1, dtype=torch.float32)
+
+        for i, (t_cur, t_next) in enumerate(zip(t_steps[:-1], t_steps[1:])):
+            x_cur = x_next if cfg == 1.0 else torch.cat([x_next, x_next], dim=0)
+            time_input = torch.ones(x_cur.size(0), device=x.device, dtype=torch.float32) * t_cur
+            d_cur = self.net(x_cur, time_input, x)
+            if not cfg == 1.0:
+                d_cur_cond, d_cur_uncond = d_cur.chunk(2)
+                d_cur = d_cur_uncond + cfg * (d_cur_cond - d_cur_uncond)
+            x_next = x_cur[:x_next.shape[0]] + (t_next - t_cur) * d_cur
+
+        if not cfg == 1.0:
+            x_next = torch.cat([x_next, x_next], dim=0)
+
+        return x_next
+    
+    def euler_maruyama_sampler(self, cfg, bsz, x, temperature=1.0):
+        if cfg == 1.0:
+            x_next = torch.randn(bsz, 1, device=x.device)
+        else:
+            x_next = torch.randn(bsz // 2, 1, device=x.device)
+        t_steps = torch.linspace(0, 0.96, self.num_sampling_steps, dtype=torch.float32)
+        t_steps = torch.cat([t_steps, torch.tensor([1.], dtype=torch.float32)])
+
+        for i, (t_cur, t_next) in enumerate(zip(t_steps[:-2], t_steps[1:-1])):
+            dt = t_next - t_cur
+            x_cur = x_next
+            if not cfg == 1.0:
+                model_input = torch.cat([x_cur] * 2, dim=0)
+            else:
+                model_input = x_cur
+
+            time_input = torch.ones(model_input.size(0), device=x.device, dtype=torch.float32) * t_cur
+            diffusion = compute_diffusion(1-t_cur, temperature)            
+            eps_i = torch.randn_like(x_cur)
+            deps = eps_i * torch.sqrt(dt)
+
+            # compute drift
+            v_cur = self.net(model_input, time_input, x)
+            s_cur = get_score_from_velocity(v_cur, model_input, time_input, path_type=self.path_type)
+            d_cur = v_cur - 0.5 * diffusion * s_cur
+            if not cfg == 1.0:
+                d_cur_cond, d_cur_uncond = d_cur.chunk(2)
+                d_cur = d_cur_uncond + cfg * (d_cur_cond - d_cur_uncond)
+
+            x_next =  x_cur + d_cur * dt + torch.sqrt(diffusion) * deps
+
+        # last step
+        t_cur, t_next = t_steps[-2], t_steps[-1]
+        dt = t_next - t_cur
+        x_cur = x_next
+        if not cfg == 1.0:
+            model_input = torch.cat([x_cur] * 2, dim=0)
+        else:
+            model_input = x_cur        
+        time_input = torch.ones(model_input.size(0), device=x.device, dtype=torch.float32) * t_cur
+        
+        # compute drift
+        v_cur = self.net(model_input, time_input, x)
+        s_cur = get_score_from_velocity(v_cur, model_input, time_input, path_type=self.path_type)
+        diffusion = compute_diffusion(1-t_cur, temperature)
+        d_cur = v_cur - 0.5 * diffusion * s_cur
+        if not cfg == 1.0:
+            d_cur_cond, d_cur_uncond = d_cur.chunk(2)
+            d_cur = d_cur_uncond + cfg * (d_cur_cond - d_cur_uncond)
+
+        x_next = x_cur + dt * d_cur
+
+        if not cfg == 1.0:
+            x_next = torch.cat([x_next, x_next], dim=0)
+
+        return x_next
  
     def init_weights(self, init_adaln=0.5, init_adaln_gamma=1e-5, init_std=0.02, conv_std_or_gain=0.02):
         nn.init.trunc_normal_(self.start_token.data, mean=0, std=init_std)
