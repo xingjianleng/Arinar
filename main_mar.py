@@ -205,7 +205,7 @@ def main(args):
     for param in vae.parameters():
         param.requires_grad = False
 
-    if args.head_type == "ar_diff_loss" or args.head_type == "ar_rect_flow" or args.head_type == "diff_loss":
+    if args.head_type == "ar_diff_loss" or args.head_type == "ar_rect_flow" or args.head_type == "diff_loss" or args.head_type == "rect_flow":
         kwargs = {
             "num_sampling_steps": args.num_sampling_steps, 
         }

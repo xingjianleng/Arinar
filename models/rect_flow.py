@@ -6,8 +6,8 @@ from models.cond_mlp import SimpleMLPAdaLN
 
 class RectFlowHead(nn.Module):
     def __init__(self, token_embed_dim, decoder_embed_dim, 
-                 num_sampling_steps,
-                 head_width, head_depth):
+                 num_sampling_steps='50',
+                 head_width=1024, head_depth=6):
         super(RectFlowHead, self).__init__()
         self.token_embed_dim = token_embed_dim
         self.flow_net = SimpleMLPAdaLN(
@@ -36,14 +36,13 @@ class RectFlowHead(nn.Module):
         return rec_loss
 
     def sample(self, z, temperature=1.0, cfg=1.0):
-        x_next = torch.randn(z.size(0), self.token_embed_dim).to(z.device)
+        x_next = torch.randn(z.size(0), self.token_embed_dim, device=z.device)
         t_steps = torch.linspace(0, 1, self.num_sampling_steps+1, dtype=torch.float32)
 
         for i, (t_cur, t_next) in enumerate(zip(t_steps[:-1], t_steps[1:])):
             x_cur = x_next
-            time_input = torch.ones(x_cur.size(0)).to(device=z.device, dtype=torch.float32) * t_cur
-            with torch.cuda.amp.autocast(dtype=torch.float32):
-                d_cur = self.flow_net(x_cur, time_input, z)
+            time_input = torch.ones(x_cur.size(0), device=z.device, dtype=torch.float32) * t_cur
+            d_cur = self.flow_net(x_cur, time_input, z)
             x_next = x_cur + (t_next - t_cur) * d_cur
 
         return x_next
