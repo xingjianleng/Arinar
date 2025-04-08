@@ -163,13 +163,17 @@ class ARHead_rect_flow(nn.Module):
         t_steps = torch.linspace(0, 1, self.num_sampling_steps+1, dtype=torch.float32)
 
         for i, (t_cur, t_next) in enumerate(zip(t_steps[:-1], t_steps[1:])):
-            x_cur = x_next if cfg == 1.0 else torch.cat([x_next, x_next], dim=0)
-            time_input = torch.ones(x_cur.size(0), device=x.device, dtype=torch.float32) * t_cur
-            d_cur = self.net(x_cur, time_input, x)
+            x_cur = x_next
+            if not cfg == 1.0:
+                model_input = torch.cat([x_cur] * 2, dim=0)
+            else:
+                model_input = x_cur
+            time_input = torch.ones(model_input.size(0), device=x.device, dtype=torch.float32) * t_cur
+            d_cur = self.net(model_input, time_input, x)
             if not cfg == 1.0:
                 d_cur_cond, d_cur_uncond = d_cur.chunk(2)
                 d_cur = d_cur_uncond + cfg * (d_cur_cond - d_cur_uncond)
-            x_next = x_cur[:x_next.shape[0]] + (t_next - t_cur) * d_cur
+            x_next = x_cur + (t_next - t_cur) * d_cur
 
         if not cfg == 1.0:
             x_next = torch.cat([x_next, x_next], dim=0)
