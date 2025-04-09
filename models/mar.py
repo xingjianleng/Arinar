@@ -117,7 +117,7 @@ class MAR(nn.Module):
                                     decoder_embed_dim=decoder_embed_dim, inner_ar_width=inner_ar_width,
                                     inner_ar_depth=inner_ar_depth, head_width=head_width, head_depth=head_depth, **kwargs)
         elif head_type == "ar_byte":
-            self.arhead = ARHead_byte(num_bytes=4, token_embed_dim=self.token_embed_dim,
+            self.arhead = ARHead_byte(num_bytes=3, token_embed_dim=self.token_embed_dim,
                                     decoder_embed_dim=decoder_embed_dim, inner_ar_width=inner_ar_width,
                                     inner_ar_depth=inner_ar_depth, head_width=head_width, head_depth=head_depth)
         elif head_type == "rect_flow":
