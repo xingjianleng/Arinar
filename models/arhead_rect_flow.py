@@ -127,7 +127,7 @@ class ARHead_rect_flow(nn.Module):
 
         return rec_loss
 
-    def sample(self, z, temperature=1.0, cfg=1.0, top_p=0.99):
+    def sample(self, z, temperature=1.0, cfg=1.0, guidance_low=0.0, guidance_high=1.0):
         bsz = z.shape[0]
 
         start = self.cond_proj(z).unsqueeze(1) + self.start_token.expand(bsz, 1, -1)
@@ -145,7 +145,7 @@ class ARHead_rect_flow(nn.Module):
             if self.use_euler_maruyama_sampler:
                 x_next = self.euler_maruyama_sampler(cfg, bsz, x, temperature=temperature)
             else:
-                x_next = self.euler_sampler(cfg, bsz, x)
+                x_next = self.euler_sampler(cfg, bsz, x, guidance_low=guidance_low, guidance_high=guidance_high)
 
             res.append(x_next)
             x = self.input_proj(x_next.unsqueeze(-1))
@@ -155,7 +155,7 @@ class ARHead_rect_flow(nn.Module):
 
         return res
 
-    def euler_sampler(self, cfg, bsz, x):
+    def euler_sampler(self, cfg, bsz, x, guidance_low=0.0, guidance_high=1.0):
         if cfg == 1.0:
             x_next = torch.randn(bsz, 1, device=x.device)
         else:
@@ -164,18 +164,18 @@ class ARHead_rect_flow(nn.Module):
 
         for i, (t_cur, t_next) in enumerate(zip(t_steps[:-1], t_steps[1:])):
             x_cur = x_next
-            if not cfg == 1.0:
+            if cfg > 1.0 and t_cur <= guidance_high and t_cur >= guidance_low:
                 model_input = torch.cat([x_cur] * 2, dim=0)
             else:
                 model_input = x_cur
             time_input = torch.ones(model_input.size(0), device=x.device, dtype=torch.float32) * t_cur
-            d_cur = self.net(model_input, time_input, x)
-            if not cfg == 1.0:
+            d_cur = self.net(model_input, time_input, x[:model_input.size(0)])
+            if cfg > 1.0 and t_cur <= guidance_high and t_cur >= guidance_low:
                 d_cur_cond, d_cur_uncond = d_cur.chunk(2)
                 d_cur = d_cur_uncond + cfg * (d_cur_cond - d_cur_uncond)
             x_next = x_cur + (t_next - t_cur) * d_cur
 
-        if not cfg == 1.0:
+        if cfg > 1.0 and t_cur <= guidance_high and t_cur >= guidance_low:
             x_next = torch.cat([x_next, x_next], dim=0)
 
         return x_next
