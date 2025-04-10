@@ -109,6 +109,7 @@ class ARHead_byte(nn.Module):
         for i in range(self.num_bytes):
             head_nm, head = self.head_nm[i], self.head[i]
             x_split = x[:, i::self.num_bytes]
+            print(f"i: {i}, x_split max: {x_split.max().item()}, min: {x_split.min().item()}")
             x_split = head(head_nm(x_split, z))
 
             x_split = x_split.reshape(-1, self.vocabulary_size[i])
@@ -163,30 +164,14 @@ class ARHead_byte(nn.Module):
         return res
 
 
-    def init_weights(self, init_adaln=0.5, init_adaln_gamma=1e-5, init_head=0.02, init_std=0.02, conv_std_or_gain=0.02):
+    def init_weights(self, init_adaln=0.02, init_adaln_gamma=1e-5, init_head=0.02, init_std=0.02, conv_std_or_gain=0.02):
         nn.init.trunc_normal_(self.start_token.data, mean=0, std=init_std)
         nn.init.trunc_normal_(self.pos_embedding.data, mean=0, std=init_std)
         for word_emb in self.word_embed:
             nn.init.trunc_normal_(word_emb.weight.data, mean=0, std=init_std)
-
-        print(f'[init_weights] {type(self).__name__} with {init_std=:g}')
-        for m in self.modules():
-            with_weight = hasattr(m, 'weight') and m.weight is not None
-            with_bias = hasattr(m, 'bias') and m.bias is not None
-            if isinstance(m, nn.Linear):
-                nn.init.trunc_normal_(m.weight.data, std=init_std)
-                if with_bias: m.bias.data.zero_()
-            elif isinstance(m, nn.Embedding):
-                nn.init.trunc_normal_(m.weight.data, std=init_std)
-                if m.padding_idx is not None: m.weight.data[m.padding_idx].zero_()
-            elif isinstance(m, (nn.LayerNorm, nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d, nn.SyncBatchNorm, nn.GroupNorm, nn.InstanceNorm1d, nn.InstanceNorm2d, nn.InstanceNorm3d)):
-                if with_weight: m.weight.data.fill_(1.)
-                if with_bias: m.bias.data.zero_()
-            # conv: VAR has no conv, only VQVAE has conv
-            elif isinstance(m, (nn.Conv1d, nn.Conv2d, nn.Conv3d, nn.ConvTranspose1d, nn.ConvTranspose2d, nn.ConvTranspose3d)):
-                if conv_std_or_gain > 0: nn.init.trunc_normal_(m.weight.data, std=conv_std_or_gain)
-                else: nn.init.xavier_normal_(m.weight.data, gain=-conv_std_or_gain)
-                if with_bias: m.bias.data.zero_()
+        self.cond_proj.weight.data.zero_()
+        self.cond_proj.bias.data.zero_()
+        nn.init.trunc_normal_(self.level_embed.weight.data, mean=0, std=init_std)
         
         if init_head >= 0:
             for head in self.head:
