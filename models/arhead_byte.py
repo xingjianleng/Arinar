@@ -7,7 +7,7 @@ import torch
 import torch.nn as nn
 from torch.utils.checkpoint import checkpoint
 
-from models.adaln import AdaLNSelfAttn, AdaLNBeforeHead
+from models.adaln import AdaLNSelfAttn, AdaLNBeforeHead_W_HiddenDim
 
 
 class ByteConverter():
@@ -72,9 +72,10 @@ class ARHead_byte(nn.Module):
         self.using_fused_add_norm_fn = any(fused_add_norm_fns)
         
         # Model head
-        self.head_nm = nn.ModuleList([AdaLNBeforeHead(inner_ar_width, decoder_embed_dim, norm_layer)
-                                      for _ in range(num_bytes)])
-        self.head = nn.ModuleList([nn.Linear(inner_ar_width, self.vocabulary_size[i])
+        self.hidden_dim = [256, 512, 768]
+        self.head_nm = nn.ModuleList([AdaLNBeforeHead_W_HiddenDim(inner_ar_width, decoder_embed_dim, self.hidden_dim[i], norm_layer)
+                                      for i in range(num_bytes)])
+        self.head = nn.ModuleList([nn.Linear(self.hidden_dim[i], self.vocabulary_size[i])
                                         for i in range(num_bytes)])
 
         self.init_weights()

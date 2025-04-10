@@ -207,3 +207,16 @@ class AdaLNBeforeHead_W_Loc(nn.Module):
         y = cond_BD.unsqueeze(1) + self.loc_emb(loc_B)
         scale, shift = self.ada_lin(y).split(self.C, dim=-1)
         return self.ln_wo_grad(x_BLC).mul(scale.add(1)).add_(shift)
+    
+class AdaLNBeforeHead_W_HiddenDim(nn.Module):
+    def __init__(self, C, D, H, norm_layer):   # C: embed_dim, D: cond_dim
+        super().__init__()
+        self.C, self.D, self.H = C, D, H
+        self.inp_proj = nn.Linear(C, H)
+        self.ln_wo_grad = norm_layer(H, elementwise_affine=False)
+        self.ada_lin = nn.Sequential(nn.SiLU(inplace=False), nn.Linear(D, 2*H))
+    
+    def forward(self, x_BLC: torch.Tensor, cond_BD: torch.Tensor):
+        inp = self.inp_proj(x_BLC)
+        scale, shift = self.ada_lin(cond_BD).view(-1, 1, 2, self.H).unbind(2)
+        return self.ln_wo_grad(inp).mul(scale.add(1)).add_(shift)
