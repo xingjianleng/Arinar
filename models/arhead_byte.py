@@ -163,13 +163,12 @@ class ARHead_byte(nn.Module):
 
         return res
 
-
     def init_weights(self, init_adaln=0.02, init_adaln_gamma=1e-5, init_head=0.02, init_std=0.02, conv_std_or_gain=0.02):
         nn.init.trunc_normal_(self.start_token.data, mean=0, std=init_std)
         nn.init.trunc_normal_(self.pos_embedding.data, mean=0, std=init_std)
         for word_emb in self.word_embed:
             nn.init.trunc_normal_(word_emb.weight.data, mean=0, std=init_std)
-        self.cond_proj.weight.data.zero_()
+        nn.init.trunc_normal_(self.cond_proj.weight.data, mean=0, std=init_std)
         self.cond_proj.bias.data.zero_()
         nn.init.trunc_normal_(self.level_embed.weight.data, mean=0, std=init_std)
         
