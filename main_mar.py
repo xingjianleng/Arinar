@@ -103,7 +103,7 @@ def get_args_parser():
     parser.add_argument('--head_width', type=int, default=1024)
     parser.add_argument('--head_depth', type=int, default=6)
     parser.add_argument('--num_sampling_steps', type=str, default="100")
-    parser.add_argument('--pos_emb_for_head', action='store_true', help='use positional embedding for model head')
+    parser.add_argument('--bilevel_schedule', action='store_true', help='use bilevel schedule for model head')
 
     # Dataset parameters
     parser.add_argument('--data_path', default='./data/imagenet', type=str,
@@ -205,16 +205,11 @@ def main(args):
     for param in vae.parameters():
         param.requires_grad = False
 
-    if args.head_type == "ar_diff_loss" or args.head_type == "ar_rect_flow" or args.head_type == "diff_loss" or args.head_type == "rect_flow":
-        kwargs = {
-            "num_sampling_steps": args.num_sampling_steps, 
-        }
-    else:
-        kwargs = {}
-    if args.enc_dec_depth > 0:
-        kwargs["enc_dec_depth"] = args.enc_dec_depth
-    if args.pos_emb_for_head:
-        kwargs["pos_emb_for_head"] = args.pos_emb_for_head
+    kwargs = {
+        "num_sampling_steps": args.num_sampling_steps,
+        "bilevel_schedule": args.bilevel_schedule,
+        "enc_dec_depth": args.enc_dec_depth,
+    }
 
     if args.model.startswith('mar'):
         model = mar.__dict__[args.model](

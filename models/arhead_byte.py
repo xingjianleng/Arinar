@@ -72,7 +72,7 @@ class ARHead_byte(nn.Module):
         self.using_fused_add_norm_fn = any(fused_add_norm_fns)
         
         # Model head
-        self.hidden_dim = [256, 512, 768]
+        self.hidden_dim = [768, 768, 1024]
         self.head_nm = nn.ModuleList([AdaLNBeforeHead_W_HiddenDim(inner_ar_width, decoder_embed_dim, self.hidden_dim[i], norm_layer)
                                       for i in range(num_bytes)])
         self.head = nn.ModuleList([nn.Linear(self.hidden_dim[i], self.vocabulary_size[i])
@@ -111,6 +111,7 @@ class ARHead_byte(nn.Module):
             x_split = x[:, i::self.num_bytes]
             print(f"i: {i}, x_split max: {x_split.max().item()}, min: {x_split.min().item()}")
             x_split = head(head_nm(x_split, z))
+            print(f"After Head i: {i}, x_split max: {x_split.max().item()}, min: {x_split.min().item()}")
 
             x_split = x_split.reshape(-1, self.vocabulary_size[i])
 

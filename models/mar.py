@@ -107,15 +107,17 @@ class MAR(nn.Module):
             self.arhead = ARHead_gmm(num_gaussians=num_gaussians, token_embed_dim=self.token_embed_dim,
                                     decoder_embed_dim=decoder_embed_dim, inner_ar_width=inner_ar_width,
                                     inner_ar_depth=inner_ar_depth, head_width=head_width, head_depth=head_depth,
-                                    pos_emb_for_head=kwargs.get("pos_emb_for_head", False))
+                                    bilevel_schedule=kwargs.get("bilevel_schedule", False))
         elif head_type == "ar_diff_loss":
             self.arhead = ARHead_diff(token_embed_dim=self.token_embed_dim,
                                     decoder_embed_dim=decoder_embed_dim, inner_ar_width=inner_ar_width,
-                                    inner_ar_depth=inner_ar_depth, head_width=head_width, head_depth=head_depth, **kwargs)
+                                    inner_ar_depth=inner_ar_depth, head_width=head_width, head_depth=head_depth,
+                                    num_sampling_steps=kwargs.get("num_sampling_steps", "50"))
         elif head_type == "ar_rect_flow":
             self.arhead = ARHead_rect_flow(token_embed_dim=self.token_embed_dim,
                                     decoder_embed_dim=decoder_embed_dim, inner_ar_width=inner_ar_width,
-                                    inner_ar_depth=inner_ar_depth, head_width=head_width, head_depth=head_depth, **kwargs)
+                                    inner_ar_depth=inner_ar_depth, head_width=head_width, head_depth=head_depth,
+                                    num_sampling_steps=kwargs.get("num_sampling_steps", "50"))
         elif head_type == "ar_byte":
             self.arhead = ARHead_byte(num_bytes=3, token_embed_dim=self.token_embed_dim,
                                     decoder_embed_dim=decoder_embed_dim, inner_ar_width=inner_ar_width,
@@ -376,9 +378,8 @@ class MAR(nn.Module):
 
 
 def mar_base(**kwargs):
-    if 'enc_dec_depth' in kwargs:
-        encoder_depth = decoder_depth = kwargs.pop('enc_dec_depth')
-    else:
+    encoder_depth = decoder_depth = kwargs.pop('enc_dec_depth')
+    if encoder_depth < 0:
         encoder_depth = decoder_depth = 14
     model = MAR(
         encoder_embed_dim=768, encoder_depth=encoder_depth, encoder_num_heads=12,
@@ -388,9 +389,8 @@ def mar_base(**kwargs):
 
 
 def mar_large(**kwargs):
-    if 'enc_dec_depth' in kwargs:
-        encoder_depth = decoder_depth = kwargs.pop('enc_dec_depth')
-    else:
+    encoder_depth = decoder_depth = kwargs.pop('enc_dec_depth')
+    if encoder_depth < 0:
         encoder_depth = decoder_depth = 18
     model = MAR(
         encoder_embed_dim=1024, encoder_depth=encoder_depth, encoder_num_heads=16,
