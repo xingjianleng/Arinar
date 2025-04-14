@@ -103,6 +103,7 @@ def get_args_parser():
     parser.add_argument('--head_width', type=int, default=1024)
     parser.add_argument('--head_depth', type=int, default=6)
     parser.add_argument('--num_sampling_steps', type=str, default="100")
+    parser.add_argument('--feature_group', type=int, default=1)
     parser.add_argument('--bilevel_schedule', action='store_true', help='use bilevel schedule for model head')
 
     # Dataset parameters
@@ -207,6 +208,7 @@ def main(args):
 
     kwargs = {
         "num_sampling_steps": args.num_sampling_steps,
+        "feature_group": args.feature_group,
         "bilevel_schedule": args.bilevel_schedule,
         "enc_dec_depth": args.enc_dec_depth,
     }

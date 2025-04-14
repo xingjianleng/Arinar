@@ -107,7 +107,8 @@ class MAR(nn.Module):
             self.arhead = ARHead_gmm(num_gaussians=num_gaussians, token_embed_dim=self.token_embed_dim,
                                     decoder_embed_dim=decoder_embed_dim, inner_ar_width=inner_ar_width,
                                     inner_ar_depth=inner_ar_depth, head_width=head_width, head_depth=head_depth,
-                                    bilevel_schedule=kwargs.get("bilevel_schedule", False))
+                                    bilevel_schedule=kwargs.get("bilevel_schedule", False),
+                                    feature_group=kwargs.get("feature_group", 1))
         elif head_type == "ar_diff_loss":
             self.arhead = ARHead_diff(token_embed_dim=self.token_embed_dim,
                                     decoder_embed_dim=decoder_embed_dim, inner_ar_width=inner_ar_width,

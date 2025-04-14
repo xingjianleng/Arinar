@@ -58,12 +58,12 @@ class ARHead_gmm(nn.Module):
 
         self.bilevel_schedule = bilevel_schedule
 
-    def extract_gmm(self, pred):
+    def extract_gmm(self, pred, bsz):
         weight = pred[:, :, -self.num_gaussians:].softmax(dim=-1)
         mu = pred[:, :, :self.num_gaussians*self.feature_group]
-        mu = mu.reshape(-1, self.num_groups, self.num_gaussians, self.feature_group)
-        logvar = pred[:, :, self.num_gaussians*self.feature_group: 2 * self.num_gaussians*self.feature_group]
-        logvar = logvar.reshape(-1, self.num_groups, self.num_gaussians, self.feature_group)
+        mu = mu.reshape(bsz, -1, self.num_gaussians, self.feature_group)
+        logvar = pred[:, :, self.num_gaussians*self.feature_group: 2*self.num_gaussians*self.feature_group]
+        logvar = logvar.reshape(bsz, -1, self.num_gaussians, self.feature_group)
 
         return weight, mu, logvar
  
@@ -71,7 +71,7 @@ class ARHead_gmm(nn.Module):
         bsz = z.shape[0]
         start = self.cond_proj(z).unsqueeze(1) + self.start_token.expand(bsz, 1, -1)
 
-        x = torch.cat((start, self.input_proj(target[:, :-1].reshape(-1, self.feature_group))), dim=1)
+        x = torch.cat((start, self.input_proj(target.reshape(-1, self.num_groups, self.feature_group)[:, :-1])), dim=1)
         x = x + self.pos_embedding.expand(bsz, -1, -1)
 
         for b in self.blocks:
@@ -79,7 +79,7 @@ class ARHead_gmm(nn.Module):
         x = self.head(self.head_nm(x, z))
 
         # Compute loss
-        weight, mu, logvar = self.extract_gmm(x)
+        weight, mu, logvar = self.extract_gmm(x, bsz)
 
         # Multi-variate Gaussian likelihood
         target = target.reshape(bsz, self.num_groups, 1, self.feature_group)
@@ -110,7 +110,7 @@ class ARHead_gmm(nn.Module):
                 x = b(x=x, cond_BD=z, attn_bias=None, causal=False)
             x = self.head(self.head_nm(x, z))
 
-            weight, mu, logvar = self.extract_gmm(x)
+            weight, mu, logvar = self.extract_gmm(x, len(x))
 
             if cfg == 1.0:
                 if self.bilevel_schedule:
@@ -118,6 +118,7 @@ class ARHead_gmm(nn.Module):
                 else:
                     temp_iter = temperature
                 x = self.sample_from_gmm(weight, mu, logvar, temperature=temp_iter, num_samples=1)[0]
+                x = x.reshape(bsz, self.feature_group)
             else:
                 if self.bilevel_schedule:
                     temp_iter = 1 + (temperature - 1) * i / (self.num_groups - 1)
@@ -132,7 +133,7 @@ class ARHead_gmm(nn.Module):
                 ll_wo_c = self.get_log_likelihood(x, weight[half_bsz:], mu[half_bsz:], logvar[half_bsz:])
                 ll = (ll_w_c - ll_wo_c) * (cfg_iter - 1.)
 
-                x = x.permute(1, 2, 0)
+                x = x.reshape(-1, half_bsz, self.feature_group).permute(1, 2, 0)
                 prob = ll.permute(1, 2, 0).softmax(dim=-1)
                 selected = torch.distributions.Categorical(prob).sample()
                 x = torch.gather(x, -1, selected.unsqueeze(-1)).squeeze(-1)
@@ -140,7 +141,7 @@ class ARHead_gmm(nn.Module):
 
             res.append(x)
 
-            x = self.input_proj(x.unsqueeze(-1))
+            x = self.input_proj(x.reshape(bsz, 1, self.feature_group))
         
         for b in self.blocks: b.attn.kv_caching(False)
         res = torch.cat(res, dim=1)
@@ -148,23 +149,24 @@ class ARHead_gmm(nn.Module):
         return res
     
     def sample_from_gmm(self, weight, mu, logvar, temperature=1.0, num_samples=1):
-        sample_shape = [num_samples, mu.size(0), mu.size(1), mu.size(2)]
+        sample_shape = [num_samples, mu.size(0), mu.size(1), mu.size(2), mu.size(3)]
 
         # Sample from the Gaussian Mixture Model
         mixture = torch.distributions.Categorical(weight)
-        idx = mixture.sample((num_samples,))
+        idx = mixture.sample((num_samples,)).unsqueeze(-1).unsqueeze(-1)
+        idx = idx.expand(-1, -1, -1, -1, mu.size(3))
 
         eps = torch.randn(sample_shape, device=mu.device)
         std = logvar.exp().sqrt() * temperature
-        sample = eps * std.unsqueeze(0) + mu.unsqueeze(0)  # [num_samples, bsz*seq_len, token_embed_dim, num_gaussians]
+        sample = eps * std.unsqueeze(0) + mu.unsqueeze(0)  # [num_samples, bsz*seq_len, num_groups, num_gaussians, feature_group]
 
-        sample = sample.gather(-1, idx.unsqueeze(-1)).squeeze(-1)
+        sample = sample.gather(-2, idx).squeeze(-2)
 
         return sample
     
     def get_log_likelihood(self, x, weight, mu, logvar):
-        diff = x.unsqueeze(-1) - mu.unsqueeze(0)  # [num_samples, bsz*seq_len, token_embed_dim, num_gaussians]
-        log_likelihood = -0.5 * (diff**2 / logvar.unsqueeze(0).exp() + logvar.unsqueeze(0) + math.log(2 * pi))
+        diff = x.unsqueeze(-1) - mu.unsqueeze(0)  # [num_samples, bsz*seq_len, num_groups, num_gaussians, feature_group]
+        log_likelihood = -0.5 * (diff**2 / logvar.unsqueeze(0).exp() + logvar.unsqueeze(0) + math.log(2 * pi)).sum(-1)
         log_likelihood = torch.logsumexp(torch.log(weight.unsqueeze(0)) + log_likelihood, dim=-1)
 
         return log_likelihood
