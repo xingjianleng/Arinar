@@ -62,7 +62,7 @@ def train_one_epoch(model, vae,
                 posterior = vae.encode(samples)
 
             # normalize the std of latent to be 1. Change it if you use a different tokenizer
-            x = posterior.sample().mul_(0.2325)
+            x = posterior.sample().mul_(args.norm_scale)
 
         # forward
         if args.bf16:
@@ -174,7 +174,7 @@ def evaluate(model_without_ddp, vae, ema_params, args, epoch, batch_size=16, log
                 sampled_tokens = model_without_ddp.sample_tokens(bsz=batch_size, num_iter=args.num_iter, cfg=cfg,
                                                                  cfg_schedule=args.cfg_schedule, labels=labels_gen,
                                                                  temperature=args.temperature)
-                sampled_images = vae.decode(sampled_tokens / 0.2325)
+                sampled_images = vae.decode(sampled_tokens / args.norm_scale)
 
         # measure speed after the first generation batch
         if i >= 1:

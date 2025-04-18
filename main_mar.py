@@ -43,6 +43,8 @@ def get_args_parser():
                         help='tokenizer stride, default use KL16')
     parser.add_argument('--patch_size', default=1, type=int,
                         help='number of tokens to group as a patch.')
+    parser.add_argument('--norm_scale', default=0.2325, type=float,
+                        help='normalization scale for vae latents')
 
     # Generation parameters
     parser.add_argument('--num_iter', default=64, type=int,
@@ -212,6 +214,8 @@ def main(args):
         "bilevel_schedule": args.bilevel_schedule,
         "enc_dec_depth": args.enc_dec_depth,
     }
+    if "byte" in args.head_type:
+        args.norm_scale = 1. / 0.6
 
     if args.model.startswith('mar'):
         model = mar.__dict__[args.model](
