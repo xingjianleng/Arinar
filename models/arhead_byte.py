@@ -7,7 +7,7 @@ import torch
 import torch.nn as nn
 from torch.utils.checkpoint import checkpoint
 
-from models.adaln import AdaLNSelfAttn, AdaLNBeforeHead_W_HiddenDim
+from models.adaln import AdaLNSelfAttn, AdaLNBeforeHead
 
 
 class ByteConverter():
@@ -15,21 +15,25 @@ class ByteConverter():
         self.shifts = torch.tensor([31, 23, 12, 0]).cuda()
         self.bitwise_constants = torch.tensor([[0b1, 0b11111111, 0b11111111111, 0b111111111111]]).cuda()
 
-    def feature2byte(self, x):
+    def feature2byte(self, x, lower_exp=124, upper_exp=131):
         int_repr = x.view(torch.int32).unsqueeze(-1)
         bytes_tensor = ((int_repr >> self.shifts) & self.bitwise_constants).to(torch.int64)
-        bytes_tensor[..., 1] = bytes_tensor[..., 1].clip(100, 131) - 100 + bytes_tensor[..., 0] * 32
+        bytes_tensor[..., 1] = bytes_tensor[..., 1].clip(lower_exp, upper_exp) - lower_exp
+        bytes_tensor[..., 1] += bytes_tensor[..., 0] * (upper_exp - lower_exp + 1)
+        
         return bytes_tensor[..., 1:]
     
-    def byte2feature(self, inp):
+    def byte2feature(self, inp, lower_exp=124, upper_exp=131):
         bytes_tensor = inp.clone()
         
-        sign = bytes_tensor[..., [0]] // 32
-        bytes_tensor[..., 0] = bytes_tensor[..., 0] % 32 + 100
+        sign = bytes_tensor[..., [0]] // (upper_exp - lower_exp + 1)
+        bytes_tensor[..., 0] = bytes_tensor[..., 0] % (upper_exp - lower_exp + 1) + lower_exp
         bytes_tensor = torch.cat([sign, bytes_tensor], dim=-1)
 
         x = (bytes_tensor << self.shifts).sum(-1)
         x = x.to(torch.int32).view(torch.float32)
+
+        x[bytes_tensor[:, 1] == upper_exp] = x[bytes_tensor[:, 1] == upper_exp].sign() * 16.0
 
         return x
 
@@ -43,7 +47,7 @@ class ARHead_byte(nn.Module):
         self.inner_ar_width = inner_ar_width
         
         # Input projection
-        self.vocabulary_size = [64, 2048, 4096]
+        self.vocabulary_size = [16, 2048, 4096]
         self.word_embed = nn.ModuleList([nn.Embedding(self.vocabulary_size[i], self.inner_ar_width).cuda() 
                                          for i in range(num_bytes)])
         self.cond_proj = nn.Linear(decoder_embed_dim, inner_ar_width)
@@ -72,10 +76,9 @@ class ARHead_byte(nn.Module):
         self.using_fused_add_norm_fn = any(fused_add_norm_fns)
         
         # Model head
-        self.hidden_dim = [768, 768, 1024]
-        self.head_nm = nn.ModuleList([AdaLNBeforeHead_W_HiddenDim(inner_ar_width, decoder_embed_dim, self.hidden_dim[i], norm_layer)
+        self.head_nm = nn.ModuleList([AdaLNBeforeHead(inner_ar_width, decoder_embed_dim, norm_layer)
                                       for i in range(num_bytes)])
-        self.head = nn.ModuleList([nn.Linear(self.hidden_dim[i], self.vocabulary_size[i])
+        self.head = nn.ModuleList([nn.Linear(inner_ar_width, self.vocabulary_size[i])
                                         for i in range(num_bytes)])
 
         self.init_weights()
@@ -109,15 +112,18 @@ class ARHead_byte(nn.Module):
         for i in range(self.num_bytes):
             head_nm, head = self.head_nm[i], self.head[i]
             x_split = x[:, i::self.num_bytes]
-            print(f"i: {i}, x_split max: {x_split.max().item()}, min: {x_split.min().item()}")
             x_split = head(head_nm(x_split, z))
-            print(f"After Head i: {i}, x_split max: {x_split.max().item()}, min: {x_split.min().item()}")
 
             x_split = x_split.reshape(-1, self.vocabulary_size[i])
 
             # Cross entropy loss
-            loss = self.loss_func(x_split, target[:, :, i].flatten())
-            loss = loss.reshape(bsz, -1).mean(-1)
+            loss = self.loss_func(x_split, target[:, :, i].flatten()).reshape(bsz, self.token_embed_dim)
+
+            # Apply mask for super large or small values
+            if i == 1:
+                loss = loss.masked_fill(target[:, :, i-1] % 8 == 7, 0)
+
+            loss = loss.mean(-1)
             if mask is not None:
                 loss = (loss * mask).sum() / mask.sum()
             else:
@@ -127,6 +133,8 @@ class ARHead_byte(nn.Module):
                 total_loss = loss
             else:
                 total_loss = total_loss + loss
+            
+            # print(f"Head {i}, x_split max: {x_split.max().item():.3f}, min: {x_split.min().item():.3f}, loss: {loss.item():.3f}")
 
         return total_loss / self.num_bytes
 

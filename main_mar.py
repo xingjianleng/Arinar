@@ -43,6 +43,8 @@ def get_args_parser():
                         help='tokenizer stride, default use KL16')
     parser.add_argument('--patch_size', default=1, type=int,
                         help='number of tokens to group as a patch.')
+    parser.add_argument('--norm_scale', default=0.2325, type=float,
+                        help='normalization scale for vae latents')
 
     # Generation parameters
     parser.add_argument('--num_iter', default=64, type=int,
@@ -68,7 +70,7 @@ def get_args_parser():
                         help='learning rate (absolute lr)')
     parser.add_argument('--blr', type=float, default=1e-4, metavar='LR',
                         help='base learning rate: absolute_lr = base_lr * total_batch_size / 256')
-    parser.add_argument('--min_lr', type=float, default=0., metavar='LR',
+    parser.add_argument('--min_lr', type=float, default=1e-5, metavar='LR',
                         help='lower lr bound for cyclic schedulers that hit 0')
     parser.add_argument('--lr_schedule', type=str, default='constant',
                         help='learning rate schedule')
@@ -212,6 +214,8 @@ def main(args):
         "bilevel_schedule": args.bilevel_schedule,
         "enc_dec_depth": args.enc_dec_depth,
     }
+    if "byte" in args.head_type:
+        args.norm_scale = 16. / 10.
 
     if args.model.startswith('mar'):
         model = mar.__dict__[args.model](
