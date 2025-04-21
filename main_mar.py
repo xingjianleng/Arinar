@@ -215,7 +215,7 @@ def main(args):
         "enc_dec_depth": args.enc_dec_depth,
     }
     if "byte" in args.head_type:
-        args.norm_scale = 1. / 0.6
+        args.norm_scale = 16. / 10.
 
     if args.model.startswith('mar'):
         model = mar.__dict__[args.model](

@@ -7,7 +7,7 @@ import torch
 import torch.nn as nn
 from torch.utils.checkpoint import checkpoint
 
-from models.adaln import AdaLNSelfAttn, AdaLNBeforeHead_W_HiddenDim
+from models.adaln import AdaLNSelfAttn, AdaLNBeforeHead
 
 
 class ByteConverter():
@@ -32,6 +32,8 @@ class ByteConverter():
 
         x = (bytes_tensor << self.shifts).sum(-1)
         x = x.to(torch.int32).view(torch.float32)
+
+        x[bytes_tensor[:, 1] == upper_exp] = x[bytes_tensor[:, 1] == upper_exp].sign() * 16.0
 
         return x
 
@@ -74,10 +76,9 @@ class ARHead_byte(nn.Module):
         self.using_fused_add_norm_fn = any(fused_add_norm_fns)
         
         # Model head
-        self.hidden_dim = [64, 128, 256]
-        self.head_nm = nn.ModuleList([AdaLNBeforeHead_W_HiddenDim(inner_ar_width, decoder_embed_dim, self.hidden_dim[i], norm_layer)
+        self.head_nm = nn.ModuleList([AdaLNBeforeHead(inner_ar_width, decoder_embed_dim, norm_layer)
                                       for i in range(num_bytes)])
-        self.head = nn.ModuleList([nn.Linear(self.hidden_dim[i], self.vocabulary_size[i])
+        self.head = nn.ModuleList([nn.Linear(inner_ar_width, self.vocabulary_size[i])
                                         for i in range(num_bytes)])
 
         self.init_weights()
@@ -111,15 +112,18 @@ class ARHead_byte(nn.Module):
         for i in range(self.num_bytes):
             head_nm, head = self.head_nm[i], self.head[i]
             x_split = x[:, i::self.num_bytes]
-            print(f"i: {i}, x_split max: {x_split.max().item()}, min: {x_split.min().item()}")
             x_split = head(head_nm(x_split, z))
-            print(f"After Head i: {i}, x_split max: {x_split.max().item()}, min: {x_split.min().item()}")
 
             x_split = x_split.reshape(-1, self.vocabulary_size[i])
 
             # Cross entropy loss
-            loss = self.loss_func(x_split, target[:, :, i].flatten())
-            loss = loss.reshape(bsz, -1).mean(-1)
+            loss = self.loss_func(x_split, target[:, :, i].flatten()).reshape(bsz, self.token_embed_dim)
+
+            # Apply mask for super large or small values
+            if i == 1:
+                loss = loss.masked_fill(target[:, :, i-1] % 8 == 7, 0)
+
+            loss = loss.mean(-1)
             if mask is not None:
                 loss = (loss * mask).sum() / mask.sum()
             else:
@@ -129,6 +133,8 @@ class ARHead_byte(nn.Module):
                 total_loss = loss
             else:
                 total_loss = total_loss + loss
+            
+            # print(f"Head {i}, x_split max: {x_split.max().item():.3f}, min: {x_split.min().item():.3f}, loss: {loss.item():.3f}")
 
         return total_loss / self.num_bytes
 
