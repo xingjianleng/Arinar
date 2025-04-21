@@ -33,7 +33,7 @@ class ByteConverter():
         x = (bytes_tensor << self.shifts).sum(-1)
         x = x.to(torch.int32).view(torch.float32)
 
-        x[bytes_tensor[:, 1] == upper_exp] = x[bytes_tensor[:, 1] == upper_exp].sign() * 16.0
+        x[bytes_tensor[..., 1] == upper_exp] = x[bytes_tensor[..., 1] == upper_exp].sign() * 16.0
 
         return x
 
