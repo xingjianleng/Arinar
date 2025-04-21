@@ -119,6 +119,9 @@ class ARHead_byte(nn.Module):
             # Cross entropy loss
             loss = self.loss_func(x_split, target[:, :, i].flatten()).reshape(bsz, self.token_embed_dim)
 
+            # Penalize large logits
+            loss = loss + x_split.mean(-1).abs().reshape(bsz, self.token_embed_dim)
+
             # Apply mask for super large or small values
             if i == 1:
                 loss = loss.masked_fill(target[:, :, i-1] % 8 == 7, 0)
