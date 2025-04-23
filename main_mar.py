@@ -352,7 +352,7 @@ def main(args):
     print('Training time {}'.format(total_time_str))
 
     # If this is the main process, upload checkpoint.pth to huggingface
-    if misc.is_main_process() and args.huggingface_dir is not None:
+    if misc.is_main_process() and args.huggingface_dir is not None and not args.evaluate:
         upload_file(
             path_or_fileobj=os.path.join(args.output_dir, "checkpoint-last.pth"),
             path_in_repo=os.path.join(args.output_dir, "checkpoint-last.pth"),
