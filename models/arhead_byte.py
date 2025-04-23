@@ -15,7 +15,7 @@ class ByteConverter():
         self.shifts = torch.tensor([31, 23, 12, 0]).cuda()
         self.bitwise_constants = torch.tensor([[0b1, 0b11111111, 0b11111111111, 0b111111111111]]).cuda()
 
-    def feature2byte(self, x, lower_exp=124, upper_exp=131):
+    def feature2byte(self, x, lower_exp=122, upper_exp=131):
         int_repr = x.view(torch.int32).unsqueeze(-1)
         bytes_tensor = ((int_repr >> self.shifts) & self.bitwise_constants).to(torch.int64)
         bytes_tensor[..., 1] = bytes_tensor[..., 1].clip(lower_exp, upper_exp) - lower_exp
@@ -23,7 +23,7 @@ class ByteConverter():
         
         return bytes_tensor[..., 1:]
     
-    def byte2feature(self, inp, lower_exp=124, upper_exp=131):
+    def byte2feature(self, inp, lower_exp=122, upper_exp=131):
         bytes_tensor = inp.clone()
         
         sign = bytes_tensor[..., [0]] // (upper_exp - lower_exp + 1)
@@ -47,7 +47,7 @@ class ARHead_byte(nn.Module):
         self.inner_ar_width = inner_ar_width
         
         # Input projection
-        self.vocabulary_size = [16, 2048, 4096]
+        self.vocabulary_size = [20, 2048, 4096]
         self.word_embed = nn.ModuleList([nn.Embedding(self.vocabulary_size[i], self.inner_ar_width).cuda() 
                                          for i in range(num_bytes)])
         self.cond_proj = nn.Linear(decoder_embed_dim, inner_ar_width)
@@ -76,7 +76,7 @@ class ARHead_byte(nn.Module):
         self.using_fused_add_norm_fn = any(fused_add_norm_fns)
         
         # Model head
-        self.head_nm = nn.ModuleList([AdaLNBeforeHead(inner_ar_width, decoder_embed_dim, norm_layer)
+        self.head_nm = nn.ModuleList([nn.LayerNorm(inner_ar_width, eps=1e-6, elementwise_affine=False)
                                       for i in range(num_bytes)])
         self.head = nn.ModuleList([nn.Linear(inner_ar_width, self.vocabulary_size[i])
                                         for i in range(num_bytes)])
@@ -112,15 +112,12 @@ class ARHead_byte(nn.Module):
         for i in range(self.num_bytes):
             head_nm, head = self.head_nm[i], self.head[i]
             x_split = x[:, i::self.num_bytes]
-            x_split = head(head_nm(x_split, z))
+            x_split = head(head_nm(x_split))
 
             x_split = x_split.reshape(-1, self.vocabulary_size[i])
 
             # Cross entropy loss
             loss = self.loss_func(x_split, target[:, :, i].flatten()).reshape(bsz, self.token_embed_dim)
-
-            # Penalize large logits
-            loss = loss + x_split.mean(-1).abs().reshape(bsz, self.token_embed_dim)
 
             # Apply mask for super large or small values
             if i == 1:
@@ -137,7 +134,7 @@ class ARHead_byte(nn.Module):
             else:
                 total_loss = total_loss + loss
             
-            # print(f"Head {i}, x_split max: {x_split.max().item():.3f}, min: {x_split.min().item():.3f}, loss: {loss.item():.3f}")
+            print(f"Head {i}, x_split max: {x_split.max().item():.3f}, min: {x_split.min().item():.3f}, loss: {loss.item():.3f}")
 
         return total_loss / self.num_bytes
 
@@ -159,7 +156,7 @@ class ARHead_byte(nn.Module):
                 for b in self.blocks:
                     x = b(x=x, cond_BD=z, attn_bias=None, causal=False)
                 head, head_nm = self.head[byte], self.head_nm[byte]
-                x = head(head_nm(x, z))
+                x = head(head_nm(x))
 
                 x = x.squeeze().softmax(dim=-1)
                 x = torch.multinomial(x, 1)
@@ -192,11 +189,6 @@ class ARHead_byte(nn.Module):
                 elif isinstance(head, nn.Sequential):
                     head[-1].weight.data.mul_(init_head)
                     head[-1].bias.data.zero_()
-        
-        for head_nm in self.head_nm:
-            head_nm.ada_lin[-1].weight.data.mul_(init_adaln)
-            if hasattr(head_nm.ada_lin[-1], 'bias') and head_nm.ada_lin[-1].bias is not None:
-                head_nm.ada_lin[-1].bias.data.zero_()
         
         depth = len(self.blocks)
         for block_idx, sab in enumerate(self.blocks):

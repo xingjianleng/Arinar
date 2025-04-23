@@ -5,6 +5,7 @@ import os
 import time
 from pathlib import Path
 
+from huggingface_hub import upload_file
 import torch
 import torch.backends.cudnn as cudnn
 from torch.utils.tensorboard import SummaryWriter
@@ -131,6 +132,11 @@ def get_args_parser():
     parser.add_argument('--no_pin_mem', action='store_false', dest='pin_mem')
     parser.set_defaults(pin_mem=True)
 
+    parser.add_argument('--huggingface_dir', default="QinyuZhao1116/Arinar", type=str,
+                        help='HuggingFace directory')
+    parser.add_argument('--huggingface_token', default=None, type=str,
+                        help='HuggingFace token')
+
     # distributed training parameters
     parser.add_argument('--world_size', default=1, type=int,
                         help='number of distributed processes')
@@ -215,7 +221,7 @@ def main(args):
         "enc_dec_depth": args.enc_dec_depth,
     }
     if "byte" in args.head_type:
-        args.norm_scale = 16. / 10.
+        args.norm_scale = 1.
 
     if args.model.startswith('mar'):
         model = mar.__dict__[args.model](
@@ -273,7 +279,7 @@ def main(args):
         model_without_ddp = model.module
 
     # no weight decay on bias, norm layers, and diffloss MLP
-    param_groups = misc.add_weight_decay(model_without_ddp, args.weight_decay)
+    param_groups = misc.add_weight_decay(args, model_without_ddp, args.weight_decay)
     optimizer = torch.optim.AdamW(param_groups, lr=args.lr, betas=(0.9, 0.95))
     print(optimizer)
     loss_scaler = NativeScaler()
@@ -345,6 +351,15 @@ def main(args):
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     print('Training time {}'.format(total_time_str))
 
+    # If this is the main process, upload checkpoint.pth to huggingface
+    if misc.is_main_process() and args.huggingface_dir is not None:
+        upload_file(
+            path_or_fileobj=os.path.join(args.output_dir, "checkpoint-last.pth"),
+            path_in_repo=os.path.join(args.output_dir, "checkpoint-last.pth"),
+            repo_id=args.huggingface_dir,
+            token=args.huggingface_token,
+            repo_type="model"
+        )
 
 if __name__ == '__main__':
     args = get_args_parser()

@@ -288,14 +288,20 @@ def get_grad_norm_(parameters, norm_type: float = 2.0) -> torch.Tensor:
     return total_norm
 
 
-def add_weight_decay(model, weight_decay=1e-5, skip_list=()):
+def add_weight_decay(args, model, weight_decay=1e-5, skip_list=()):
     decay = []
     no_decay = []
     for name, param in model.named_parameters():
         if not param.requires_grad:
             continue  # frozen weights
-        if len(param.shape) == 1 or name.endswith(".bias") or name in skip_list or 'arhead' in name:
-            no_decay.append(param)  # no weight decay on bias, norm and diffloss
+        if len(param.shape) == 1 or name.endswith(".bias") or name in skip_list or \
+            ('arhead' in name and args.head_type not in ['ar_byte', 'ar_diff_loss']):
+            # Original MAR does not have weight decay on the model head
+            # But in the experiments, we find this practice may not be the best, sometimes causing training instability or crashes
+            # So we add weight decay on some model heads
+            # Actually, we think we should add weight decay on all model heads, but we already trained some models
+            # Thus, we just add weight decay for ar_byte and ar_diff_loss
+            no_decay.append(param)  # no weight decay on bias, norm and model head
         else:
             decay.append(param)
     return [
