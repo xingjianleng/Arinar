@@ -295,7 +295,7 @@ def add_weight_decay(args, model, weight_decay=1e-5, skip_list=()):
         if not param.requires_grad:
             continue  # frozen weights
         if len(param.shape) == 1 or name.endswith(".bias") or name in skip_list or \
-            ('arhead' in name and args.head_type != 'ar_byte'):
+            ('arhead' in name or 'diffloss' in name or 'gmm_head' in name):
             no_decay.append(param)  # no weight decay on bias, norm and model head
         else:
             decay.append(param)

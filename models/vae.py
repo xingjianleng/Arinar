@@ -448,10 +448,10 @@ class DiagonalGaussianDistribution(object):
 
 
 class AutoencoderKL(nn.Module):
-    def __init__(self, embed_dim, ch_mult, use_variational=True, ckpt_path=None):
+    def __init__(self, embed_dim, ch_mult, use_variational=True, ckpt_path=None, **kwargs):
         super().__init__()
-        self.encoder = Encoder(ch_mult=ch_mult, z_channels=embed_dim)
-        self.decoder = Decoder(ch_mult=ch_mult, z_channels=embed_dim)
+        self.encoder = Encoder(ch_mult=ch_mult, z_channels=embed_dim, **kwargs)
+        self.decoder = Decoder(ch_mult=ch_mult, z_channels=embed_dim, **kwargs)
         self.use_variational = use_variational
         mult = 2 if self.use_variational else 1
         self.quant_conv = torch.nn.Conv2d(2 * embed_dim, mult * embed_dim, 1)
@@ -461,13 +461,15 @@ class AutoencoderKL(nn.Module):
             self.init_from_ckpt(ckpt_path)
 
     def init_from_ckpt(self, path):
-        sd = torch.load(path, map_location="cpu")["model"]
+        sd = torch.load(path, map_location="cpu")
+        if "model" in sd:
+            sd = sd["model"]
         msg = self.load_state_dict(sd, strict=False)
         print("Loading pre-trained KL-VAE")
         print("Missing keys:")
         print(msg.missing_keys)
         print("Unexpected keys:")
-        print(msg.unexpected_keys)
+        print([k for k in msg.unexpected_keys if not k.startswith("loss.")])
         print(f"Restored from {path}")
 
     def encode(self, x):

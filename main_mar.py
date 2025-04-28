@@ -45,7 +45,7 @@ def get_args_parser():
     parser.add_argument('--patch_size', default=1, type=int,
                         help='number of tokens to group as a patch.')
     parser.add_argument('--norm_scale', default=0.2325, type=float,
-                        help='normalization scale for vae latents')
+                        help='normalization scale for vae latents')  # MAR 0.2325 / LDM f16d32 0.2940
 
     # Generation parameters
     parser.add_argument('--num_iter', default=64, type=int,
@@ -65,7 +65,6 @@ def get_args_parser():
     # Optimizer parameters
     parser.add_argument('--weight_decay', type=float, default=0.02,
                         help='weight decay (default: 0.02)')
-
     parser.add_argument('--grad_checkpointing', action='store_true')
     parser.add_argument('--lr', type=float, default=None, metavar='LR',
                         help='learning rate (absolute lr)')
@@ -96,6 +95,7 @@ def get_args_parser():
     parser.add_argument('--proj_dropout', type=float, default=0.1,
                         help='projection dropout')
     parser.add_argument('--buffer_size', type=int, default=64)
+    parser.add_argument('--head_batch_mul', type=int, default=1)
     # Second layer AR parameters
     parser.add_argument('--head_type', type=str, 
                         # choices=['ar_gmm', 'ar_diff_loss', 'gmm_wo_ar', 'gmm_cov_wo_ar', 'ar_byte'], 
@@ -210,7 +210,10 @@ def main(args):
         )
 
     # define the vae and mar model
-    vae = AutoencoderKL(embed_dim=args.vae_embed_dim, ch_mult=(1, 1, 2, 2, 4), ckpt_path=args.vae_path).cuda().eval()
+    vae_kwargs = {
+        "attn_resolutions": (16,)
+    } if "ldm" in args.vae_path else {}
+    vae = AutoencoderKL(embed_dim=args.vae_embed_dim, ch_mult=(1, 1, 2, 2, 4), ckpt_path=args.vae_path, **vae_kwargs).cuda().eval()
     for param in vae.parameters():
         param.requires_grad = False
 
@@ -242,6 +245,7 @@ def main(args):
             head_width=args.head_width,
             head_depth=args.head_depth,
             head_type=args.head_type,
+            head_batch_mul=args.head_batch_mul,
             **kwargs
         )
     elif args.model.startswith('var'):
@@ -287,7 +291,7 @@ def main(args):
     # resume training
     if args.resume and os.path.exists(os.path.join(args.resume, "checkpoint-last.pth")):
         checkpoint = torch.load(os.path.join(args.resume, "checkpoint-last.pth"), map_location='cpu')
-        model_without_ddp.load_state_dict(checkpoint['model'])
+        model_without_ddp.load_state_dict(checkpoint['model'], strict=True)
         model_params = list(model_without_ddp.parameters())
         ema_state_dict = checkpoint['model_ema']
         ema_params = [ema_state_dict[name].cuda() for name, _ in model_without_ddp.named_parameters()]

@@ -47,6 +47,7 @@ class MAR(nn.Module):
                  inner_ar_depth=1,
                  head_width=1024,
                  head_depth=6,
+                 head_batch_mul=1,
                  **kwargs
                  ):
         super().__init__()
@@ -103,6 +104,8 @@ class MAR(nn.Module):
 
         # --------------------------------------------------------------------------
         # MAR head specifics
+        if "diff_loss" not in head_type:
+            assert head_batch_mul == 1, "head_batch_mul should be 1 for non-diff_loss heads"
         if head_type == "ar_gmm":
             self.arhead = ARHead_gmm(num_gaussians=num_gaussians, token_embed_dim=self.token_embed_dim,
                                     decoder_embed_dim=decoder_embed_dim, inner_ar_width=inner_ar_width,
@@ -113,7 +116,9 @@ class MAR(nn.Module):
             self.arhead = ARHead_diff(token_embed_dim=self.token_embed_dim,
                                     decoder_embed_dim=decoder_embed_dim, inner_ar_width=inner_ar_width,
                                     inner_ar_depth=inner_ar_depth, head_width=head_width, head_depth=head_depth,
-                                    num_sampling_steps=kwargs.get("num_sampling_steps", "50"))
+                                    num_sampling_steps=kwargs.get("num_sampling_steps", "50"),
+                                    feature_group=kwargs.get("feature_group", 1),
+                                    head_batch_mul=head_batch_mul)
         elif head_type == "ar_rect_flow":
             self.arhead = ARHead_rect_flow(token_embed_dim=self.token_embed_dim,
                                     decoder_embed_dim=decoder_embed_dim, inner_ar_width=inner_ar_width,
@@ -124,29 +129,38 @@ class MAR(nn.Module):
                                     decoder_embed_dim=decoder_embed_dim, inner_ar_width=inner_ar_width,
                                     inner_ar_depth=inner_ar_depth, head_width=head_width, head_depth=head_depth)
         elif head_type == "rect_flow":
-            self.arhead = RectFlowHead(token_embed_dim=self.token_embed_dim,
+            self.diffloss = RectFlowHead(token_embed_dim=self.token_embed_dim,
                                     decoder_embed_dim=decoder_embed_dim,
                                     num_sampling_steps=kwargs.get("num_sampling_steps", "50"),
                                     head_width=head_width, head_depth=head_depth)
         elif head_type == "diff_loss":
-            self.arhead = DiffLoss(token_embed_dim=self.token_embed_dim, 
+            self.diffloss = DiffLoss(token_embed_dim=self.token_embed_dim, 
                                     decoder_embed_dim=decoder_embed_dim,
                                     head_width=head_width, head_depth=head_depth,
                                     num_sampling_steps=kwargs.get("num_sampling_steps", "50"),
-                                    grad_checkpointing=grad_checkpointing)
+                                    grad_checkpointing=grad_checkpointing,
+                                    head_batch_mul=head_batch_mul)
         elif head_type == "gmm_wo_ar":
             # The arhead name is misleading, it is actually a GMM head without AR
-            self.arhead = GMMHead(num_gaussians=num_gaussians, token_embed_dim=self.token_embed_dim,
+            self.gmm_head = GMMHead(num_gaussians=num_gaussians, token_embed_dim=self.token_embed_dim,
                                 decoder_embed_dim=decoder_embed_dim,
                                 width=head_width, depth=head_depth, grad_checkpointing=grad_checkpointing)
         elif head_type == "gmm_cov_wo_ar":
-            self.arhead = GMMCovHead(num_gaussians=num_gaussians, token_embed_dim=self.token_embed_dim,
+            self.gmm_head = GMMCovHead(num_gaussians=num_gaussians, token_embed_dim=self.token_embed_dim,
                                 decoder_embed_dim=decoder_embed_dim,
                                 width=head_width, depth=head_depth, grad_checkpointing=grad_checkpointing)
         else:
             raise NotImplementedError
         
-        self.head_batch_mul = 1
+        if hasattr(self, 'head'):
+            self.next_layer_forward = self.gmm_head.forward
+            self.next_layer_sample = self.gmm_head.sample
+        elif hasattr(self, 'diffloss'):
+            self.next_layer_forward = self.diffloss.forward
+            self.next_layer_sample = self.diffloss.sample
+        else:
+            self.next_layer_forward = self.arhead.forward
+            self.next_layer_sample = self.arhead.sample
 
     def initialize_weights(self):
         # parameters
@@ -276,12 +290,12 @@ class MAR(nn.Module):
         
     def forward_loss(self, z, target, mask):
         bsz, seq_len, _ = target.shape
-        target = target.reshape(bsz * seq_len, -1).repeat(self.head_batch_mul, 1)
-        z = z.reshape(bsz*seq_len, -1).repeat(self.head_batch_mul, 1)
-        mask = mask.reshape(bsz*seq_len).repeat(self.head_batch_mul)
+        target = target.reshape(bsz * seq_len, -1)
+        z = z.reshape(bsz*seq_len, -1)
+        mask = mask.reshape(bsz*seq_len)
 
         # GMM NLL loss
-        loss = self.arhead(z=z, target=target, mask=mask)
+        loss = self.next_layer_forward(z=z, target=target, mask=mask)
         
         return loss
 
@@ -365,7 +379,7 @@ class MAR(nn.Module):
             else:
                 raise NotImplementedError
 
-            sampled_token_latent = self.arhead.sample(z, temperature=temperature, cfg=cfg_iter)
+            sampled_token_latent = self.next_layer_sample(z, temperature=temperature, cfg=cfg_iter)
             if not cfg == 1.0:
                 sampled_token_latent, _ = sampled_token_latent.chunk(2, dim=0)  # Remove null class samples
                 mask_to_pred, _ = mask_to_pred.chunk(2, dim=0)
