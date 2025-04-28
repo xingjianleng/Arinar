@@ -64,10 +64,10 @@ class CachedFolder(datasets.DatasetFolder):
     
 class CachedH5FolderDev(Dataset):
     def __init__(self, root):
-        self.h5_path = os.path.join(root, "mar_cache.h5")
+        self.h5_path = os.path.join(root, "latent_cache.h5")
         self.file = None
 
-        h5_json = os.path.join(root, "mar_cache_h5.json")
+        h5_json = os.path.join(root, "file_list.json")
 
         with open(h5_json, "r") as f:
             cache = json.load(f)

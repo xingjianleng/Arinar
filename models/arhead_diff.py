@@ -13,18 +13,23 @@ from diffusion import create_diffusion
 
 class ARHead_diff(nn.Module):
     def __init__(self, token_embed_dim, decoder_embed_dim, inner_ar_width=768, 
-                 inner_ar_depth=1, num_sampling_steps='100', head_width=1024, head_depth=6):
+                 inner_ar_depth=1, num_sampling_steps='100', head_width=1024, head_depth=6,
+                 feature_group=1, head_batch_mul=1):
         super(ARHead_diff, self).__init__()
+        assert token_embed_dim % feature_group == 0, "token_embed_dim must be divisible by feature_group"
+
         self.token_embed_dim = token_embed_dim
         self.width = inner_ar_width
+        self.feature_group = feature_group
+        self.num_groups = token_embed_dim // feature_group
         
         # Input projection
-        self.input_proj = nn.Linear(1, inner_ar_width)
+        self.input_proj = nn.Linear(feature_group, inner_ar_width)
         self.cond_proj = nn.Linear(decoder_embed_dim, inner_ar_width)
 
         # Start token and position embedding
         self.start_token = nn.Parameter(torch.empty(1, 1, inner_ar_width))
-        self.pos_embedding = nn.Parameter(torch.empty(1, token_embed_dim, inner_ar_width))
+        self.pos_embedding = nn.Parameter(torch.empty(1, self.num_groups, inner_ar_width))
 
         # Backbone blocks
         norm_layer = partial(nn.LayerNorm, eps=1e-6)
@@ -47,34 +52,35 @@ class ARHead_diff(nn.Module):
         self.init_weights()
 
         self.net = SimpleMLPAdaLN(
-            in_channels=1,  # feature-by-feature diffusion
+            in_channels=feature_group,  # feature-by-feature diffusion
             model_channels=head_width,
-            out_channels=1 * 2,  # for vlb loss
+            out_channels=feature_group * 2,  # for vlb loss
             z_channels=inner_ar_width,
             num_res_blocks=head_depth,  # hacking
         )
 
         self.train_diffusion = create_diffusion(timestep_respacing="", noise_schedule="cosine")
         self.gen_diffusion = create_diffusion(timestep_respacing=num_sampling_steps, noise_schedule="cosine")
+        self.head_batch_mul = head_batch_mul
 
- 
     def forward(self, z, target, mask=None):
         bsz = z.shape[0]
         start = self.cond_proj(z).unsqueeze(1) + self.start_token.expand(bsz, 1, -1)
 
-        x = torch.cat((start, self.input_proj(target[:, :-1].unsqueeze(-1))), dim=1)
+        x = torch.cat((start, self.input_proj(target.reshape(-1, self.num_groups, self.feature_group)[:, :-1])), dim=1)
         x = x + self.pos_embedding.expand(bsz, -1, -1)
 
         for b in self.blocks:
             x = b(x=x, cond_BD=z, attn_bias=None, causal=True)
         
-        x = x.reshape(-1, self.width)
-        target = target.reshape(-1, 1)
+        target = target.reshape(-1, self.feature_group).repeat(self.head_batch_mul, 1)
+        x = x.reshape(-1, self.width).repeat(self.head_batch_mul, 1)
+        mask = mask.repeat(self.head_batch_mul) if mask is not None else None
 
         t = torch.randint(0, self.train_diffusion.num_timesteps, (target.shape[0],), device=target.device)
         model_kwargs = dict(c=x)
         loss_dict = self.train_diffusion.training_losses(self.net, target, t, model_kwargs)
-        loss = loss_dict["loss"].reshape(bsz, self.token_embed_dim).mean(-1)
+        loss = loss_dict["loss"].reshape(bsz*self.head_batch_mul, self.num_groups).mean(-1)
         if mask is not None:
             loss = (loss * mask).sum() / mask.sum()
         return loss.mean()
@@ -88,18 +94,18 @@ class ARHead_diff(nn.Module):
         x = start
         res = []
 
-        for i in range(self.token_embed_dim):
+        for i in range(self.num_groups):
             x = x + self.pos_embedding[:, i:i+1].expand(bsz, 1, -1)
             for b in self.blocks:
                 x = b(x=x, cond_BD=z, attn_bias=None, causal=False)
 
             if not cfg == 1.0:
-                noise = torch.randn(x.shape[0] // 2, 1).cuda()
+                noise = torch.randn(x.shape[0] // 2, self.feature_group).cuda()
                 noise = torch.cat([noise, noise], dim=0)
-                model_kwargs = dict(c=x, cfg_scale=cfg)
+                model_kwargs = dict(c=x.squeeze(1), cfg_scale=cfg)
                 sample_fn = self.net.forward_with_cfg
             else:
-                noise = torch.randn(bsz, 1).cuda()
+                noise = torch.randn(bsz, self.feature_group).cuda()
                 model_kwargs = dict(c=x.squeeze(1))
                 sample_fn = self.net.forward
 
@@ -110,7 +116,7 @@ class ARHead_diff(nn.Module):
 
             res.append(sampled_token_latent)
 
-            x = self.input_proj(sampled_token_latent.unsqueeze(-1))
+            x = self.input_proj(sampled_token_latent.unsqueeze(1))
         
         for b in self.blocks: b.attn.kv_caching(False)
         res = torch.cat(res, dim=1)

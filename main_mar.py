@@ -5,6 +5,7 @@ import os
 import time
 from pathlib import Path
 
+from huggingface_hub import upload_file
 import torch
 import torch.backends.cudnn as cudnn
 from torch.utils.tensorboard import SummaryWriter
@@ -14,7 +15,7 @@ import torchvision.datasets as datasets
 from util.crop import center_crop_arr
 import util.misc as misc
 from util.misc import NativeScalerWithGradNormCount as NativeScaler
-from util.loader import CachedFolder, CachedNpzData
+from util.loader import CachedFolder, CachedNpzData, CachedH5FolderDev
 
 from models.vae import AutoencoderKL
 from models import mar, var
@@ -44,7 +45,7 @@ def get_args_parser():
     parser.add_argument('--patch_size', default=1, type=int,
                         help='number of tokens to group as a patch.')
     parser.add_argument('--norm_scale', default=0.2325, type=float,
-                        help='normalization scale for vae latents')
+                        help='normalization scale for vae latents')  # MAR 0.2325 / LDM f16d32 0.2940
 
     # Generation parameters
     parser.add_argument('--num_iter', default=64, type=int,
@@ -64,7 +65,6 @@ def get_args_parser():
     # Optimizer parameters
     parser.add_argument('--weight_decay', type=float, default=0.02,
                         help='weight decay (default: 0.02)')
-
     parser.add_argument('--grad_checkpointing', action='store_true')
     parser.add_argument('--lr', type=float, default=None, metavar='LR',
                         help='learning rate (absolute lr)')
@@ -95,6 +95,7 @@ def get_args_parser():
     parser.add_argument('--proj_dropout', type=float, default=0.1,
                         help='projection dropout')
     parser.add_argument('--buffer_size', type=int, default=64)
+    parser.add_argument('--head_batch_mul', type=int, default=1)
     # Second layer AR parameters
     parser.add_argument('--head_type', type=str, 
                         # choices=['ar_gmm', 'ar_diff_loss', 'gmm_wo_ar', 'gmm_cov_wo_ar', 'ar_byte'], 
@@ -130,6 +131,11 @@ def get_args_parser():
                         help='Pin CPU memory in DataLoader for more efficient (sometimes) transfer to GPU.')
     parser.add_argument('--no_pin_mem', action='store_false', dest='pin_mem')
     parser.set_defaults(pin_mem=True)
+
+    parser.add_argument('--huggingface_dir', default="QinyuZhao1116/Arinar", type=str,
+                        help='HuggingFace directory')
+    parser.add_argument('--huggingface_token', default=None, type=str,
+                        help='HuggingFace token')
 
     # distributed training parameters
     parser.add_argument('--world_size', default=1, type=int,
@@ -184,6 +190,8 @@ def main(args):
         if args.use_cached:
             if os.path.exists(os.path.join(args.cached_path, "mar_cache.npz")):
                 dataset_train = CachedNpzData(args.cached_path)
+            elif os.path.exists(os.path.join(args.cached_path, "latent_cache.h5")):
+                dataset_train = CachedH5FolderDev(args.cached_path)
             else:
                 dataset_train = CachedFolder(args.cached_path)
         else:
@@ -204,7 +212,10 @@ def main(args):
         )
 
     # define the vae and mar model
-    vae = AutoencoderKL(embed_dim=args.vae_embed_dim, ch_mult=(1, 1, 2, 2, 4), ckpt_path=args.vae_path).cuda().eval()
+    vae_kwargs = {
+        "attn_resolutions": (16,)
+    } if "ldm" in args.vae_path else {}
+    vae = AutoencoderKL(embed_dim=args.vae_embed_dim, ch_mult=(1, 1, 2, 2, 4), ckpt_path=args.vae_path, **vae_kwargs).cuda().eval()
     for param in vae.parameters():
         param.requires_grad = False
 
@@ -215,7 +226,7 @@ def main(args):
         "enc_dec_depth": args.enc_dec_depth,
     }
     if "byte" in args.head_type:
-        args.norm_scale = 16. / 10.
+        args.norm_scale = 1.
 
     if args.model.startswith('mar'):
         model = mar.__dict__[args.model](
@@ -236,6 +247,7 @@ def main(args):
             head_width=args.head_width,
             head_depth=args.head_depth,
             head_type=args.head_type,
+            head_batch_mul=args.head_batch_mul,
             **kwargs
         )
     elif args.model.startswith('var'):
@@ -273,7 +285,7 @@ def main(args):
         model_without_ddp = model.module
 
     # no weight decay on bias, norm layers, and diffloss MLP
-    param_groups = misc.add_weight_decay(model_without_ddp, args.weight_decay)
+    param_groups = misc.add_weight_decay(args, model_without_ddp, args.weight_decay)
     optimizer = torch.optim.AdamW(param_groups, lr=args.lr, betas=(0.9, 0.95))
     print(optimizer)
     loss_scaler = NativeScaler()
@@ -281,7 +293,7 @@ def main(args):
     # resume training
     if args.resume and os.path.exists(os.path.join(args.resume, "checkpoint-last.pth")):
         checkpoint = torch.load(os.path.join(args.resume, "checkpoint-last.pth"), map_location='cpu')
-        model_without_ddp.load_state_dict(checkpoint['model'])
+        model_without_ddp.load_state_dict(checkpoint['model'], strict=True)
         model_params = list(model_without_ddp.parameters())
         ema_state_dict = checkpoint['model_ema']
         ema_params = [ema_state_dict[name].cuda() for name, _ in model_without_ddp.named_parameters()]
@@ -345,6 +357,15 @@ def main(args):
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     print('Training time {}'.format(total_time_str))
 
+    # If this is the main process, upload checkpoint.pth to huggingface
+    if misc.is_main_process() and args.huggingface_dir is not None and not args.evaluate:
+        upload_file(
+            path_or_fileobj=os.path.join(args.output_dir, "checkpoint-last.pth"),
+            path_in_repo=os.path.join(args.output_dir, "checkpoint-last.pth"),
+            repo_id=args.huggingface_dir,
+            token=args.huggingface_token,
+            repo_type="model"
+        )
 
 if __name__ == '__main__':
     args = get_args_parser()

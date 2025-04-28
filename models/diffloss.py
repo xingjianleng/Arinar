@@ -10,7 +10,7 @@ from models.cond_mlp import SimpleMLPAdaLN
 class DiffLoss(nn.Module):
     """Diffusion Loss"""
     def __init__(self, token_embed_dim, decoder_embed_dim, head_depth, head_width, 
-                 num_sampling_steps, grad_checkpointing=False):
+                 num_sampling_steps, grad_checkpointing=False, head_batch_mul=1):
         super(DiffLoss, self).__init__()
         self.in_channels = token_embed_dim
         self.net = SimpleMLPAdaLN(
@@ -24,8 +24,13 @@ class DiffLoss(nn.Module):
 
         self.train_diffusion = create_diffusion(timestep_respacing="", noise_schedule="cosine")
         self.gen_diffusion = create_diffusion(timestep_respacing=num_sampling_steps, noise_schedule="cosine")
+        self.head_batch_mul = head_batch_mul
 
     def forward(self, target, z, mask=None):
+        target = target.repeat(self.head_batch_mul, 1)
+        z = z.repeat(self.head_batch_mul, 1)
+        mask = mask.repeat(self.head_batch_mul) if mask is not None else None
+
         t = torch.randint(0, self.train_diffusion.num_timesteps, (target.shape[0],), device=target.device)
         model_kwargs = dict(c=z)
         loss_dict = self.train_diffusion.training_losses(self.net, target, t, model_kwargs)
