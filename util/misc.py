@@ -295,12 +295,7 @@ def add_weight_decay(args, model, weight_decay=1e-5, skip_list=()):
         if not param.requires_grad:
             continue  # frozen weights
         if len(param.shape) == 1 or name.endswith(".bias") or name in skip_list or \
-            ('arhead' in name and args.head_type not in ['ar_byte', 'ar_diff_loss']):
-            # Original MAR does not have weight decay on the model head
-            # But in the experiments, we find this practice may not be the best, sometimes causing training instability or crashes
-            # So we add weight decay on some model heads
-            # Actually, we think we should add weight decay on all model heads, but we already trained some models
-            # Thus, we just add weight decay for ar_byte and ar_diff_loss
+            ('arhead' in name and args.head_type != 'ar_byte'):
             no_decay.append(param)  # no weight decay on bias, norm and model head
         else:
             decay.append(param)

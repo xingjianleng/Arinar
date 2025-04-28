@@ -96,7 +96,7 @@ class ARHead_diff(nn.Module):
             if not cfg == 1.0:
                 noise = torch.randn(x.shape[0] // 2, 1).cuda()
                 noise = torch.cat([noise, noise], dim=0)
-                model_kwargs = dict(c=x, cfg_scale=cfg)
+                model_kwargs = dict(c=x.squeeze(1), cfg_scale=cfg)
                 sample_fn = self.net.forward_with_cfg
             else:
                 noise = torch.randn(bsz, 1).cuda()
