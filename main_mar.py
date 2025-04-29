@@ -44,8 +44,6 @@ def get_args_parser():
                         help='tokenizer stride, default use KL16')
     parser.add_argument('--patch_size', default=1, type=int,
                         help='number of tokens to group as a patch.')
-    parser.add_argument('--latent_stats_file', default="latent_stats.pt", type=str,
-                        help='normalization scale for vae latents')
 
     # Generation parameters
     parser.add_argument('--num_iter', default=64, type=int,
@@ -218,7 +216,7 @@ def main(args):
     vae = AutoencoderKL(embed_dim=args.vae_embed_dim, ch_mult=(1, 1, 2, 2, 4), ckpt_path=args.vae_path, **vae_kwargs).cuda().eval()
     for param in vae.parameters():
         param.requires_grad = False
-    latent_stats = torch.load(args.latent_stats_file)
+    latent_stats = torch.load(os.path.join(args.cached_path, "latents_stats.pt"))
     latent_mean, latent_std = latent_stats['mean'].to(device), latent_stats['std'].to(device)
 
     kwargs = {
