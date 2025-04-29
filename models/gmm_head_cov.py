@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 
-from models.uncond_mlp import UncondSimpleMLPAdaLN
+from models.uncond_mlp import UncondSimpleMLP
 
 class GMMCovHead(nn.Module):
     def __init__(self, num_gaussians, token_embed_dim, decoder_embed_dim, width=1024, depth=6, grad_checkpointing=False):
@@ -11,7 +11,7 @@ class GMMCovHead(nn.Module):
         self.num_cholesky_params = token_embed_dim * (token_embed_dim + 1) // 2 * num_gaussians
         self.output_size = self.token_embed_dim * self.num_gaussians + self.num_cholesky_params + self.num_gaussians  # mean, std, and weight of Gaussians
         self.tril_indices = torch.tril_indices(self.token_embed_dim, self.token_embed_dim, device="cuda")
-        self.net = UncondSimpleMLPAdaLN(
+        self.net = UncondSimpleMLP(
             in_channels=decoder_embed_dim,
             model_channels=width,
             out_channels=self.output_size,

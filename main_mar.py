@@ -214,7 +214,7 @@ def main(args):
     # define the vae and mar model
     vae_kwargs = {
         "attn_resolutions": (16,)
-    } if "ldm" in args.vae_path else {}
+    } if "ldm" in args.vae_path or "vavae" in args.vae_path else {}
     vae = AutoencoderKL(embed_dim=args.vae_embed_dim, ch_mult=(1, 1, 2, 2, 4), ckpt_path=args.vae_path, **vae_kwargs).cuda().eval()
     for param in vae.parameters():
         param.requires_grad = False
