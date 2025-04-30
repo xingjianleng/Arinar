@@ -44,7 +44,7 @@ class FinalLayer(nn.Module):
         return x
 
 
-class UncondSimpleMLPAdaLN(nn.Module):
+class UncondSimpleMLP(nn.Module):
     """
     The MLP for Diffusion Loss.
     :param in_channels: channels in the input Tensor.

@@ -2,7 +2,7 @@ from math import pi
 import torch
 import torch.nn as nn
 
-from models.uncond_mlp import UncondSimpleMLPAdaLN
+from models.uncond_mlp import UncondSimpleMLP
 
 
 class GMMHead(nn.Module):
@@ -11,7 +11,7 @@ class GMMHead(nn.Module):
         self.num_gaussians = num_gaussians
         self.token_embed_dim = token_embed_dim
         self.output_size = self.token_embed_dim * self.num_gaussians * 2 + self.num_gaussians  # mean, std, and weight of Gaussians
-        self.gmm_predictor = UncondSimpleMLPAdaLN(
+        self.gmm_predictor = UncondSimpleMLP(
             in_channels=decoder_embed_dim,
             model_channels=width,
             out_channels=self.output_size,

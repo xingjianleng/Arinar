@@ -44,8 +44,6 @@ def get_args_parser():
                         help='tokenizer stride, default use KL16')
     parser.add_argument('--patch_size', default=1, type=int,
                         help='number of tokens to group as a patch.')
-    parser.add_argument('--norm_scale', default=0.2325, type=float,
-                        help='normalization scale for vae latents')  # MAR 0.2325 / LDM f16d32 0.2940
 
     # Generation parameters
     parser.add_argument('--num_iter', default=64, type=int,
@@ -214,10 +212,12 @@ def main(args):
     # define the vae and mar model
     vae_kwargs = {
         "attn_resolutions": (16,)
-    } if "ldm" in args.vae_path else {}
+    } if "ldm" in args.vae_path or "vavae" in args.vae_path else {}
     vae = AutoencoderKL(embed_dim=args.vae_embed_dim, ch_mult=(1, 1, 2, 2, 4), ckpt_path=args.vae_path, **vae_kwargs).cuda().eval()
     for param in vae.parameters():
         param.requires_grad = False
+    latent_stats = torch.load(os.path.join(args.cached_path, "latents_stats.pt"))
+    latent_mean, latent_std = latent_stats['mean'].to(device), latent_stats['std'].to(device)
 
     kwargs = {
         "num_sampling_steps": args.num_sampling_steps,
@@ -225,9 +225,6 @@ def main(args):
         "bilevel_schedule": args.bilevel_schedule,
         "enc_dec_depth": args.enc_dec_depth,
     }
-    if "byte" in args.head_type:
-        args.norm_scale = 1.
-
     if args.model.startswith('mar'):
         model = mar.__dict__[args.model](
             img_size=args.img_size,
@@ -314,7 +311,8 @@ def main(args):
     # evaluate FID and IS
     if args.evaluate:
         torch.cuda.empty_cache()
-        evaluate(model_without_ddp, vae, ema_params, args, 0, batch_size=args.eval_bsz, log_writer=log_writer,
+        evaluate(model_without_ddp, vae, latent_mean, latent_std, 
+                 ema_params, args, 0, batch_size=args.eval_bsz, log_writer=log_writer,
                  cfg=args.cfg, use_ema=True)
         return
 
@@ -326,7 +324,7 @@ def main(args):
             data_loader_train.sampler.set_epoch(epoch)
 
         train_one_epoch(
-            model, vae,
+            model, vae, latent_mean, latent_std,
             model_params, ema_params,
             data_loader_train,
             optimizer, device, epoch, loss_scaler,
@@ -342,10 +340,12 @@ def main(args):
         # online evaluation
         if args.online_eval and (epoch % args.eval_freq == 0 or epoch + 1 == args.epochs):
             torch.cuda.empty_cache()
-            evaluate(model_without_ddp, vae, ema_params, args, epoch, batch_size=args.eval_bsz, log_writer=log_writer,
+            evaluate(model_without_ddp, vae, latent_mean, latent_std, 
+                     ema_params, args, epoch, batch_size=args.eval_bsz, log_writer=log_writer,
                      cfg=1.0, use_ema=True)
             if not (args.cfg == 1.0 or args.cfg == 0.0):
-                evaluate(model_without_ddp, vae, ema_params, args, epoch, batch_size=args.eval_bsz // 2,
+                evaluate(model_without_ddp, vae, latent_mean, latent_std, 
+                         ema_params, args, epoch, batch_size=args.eval_bsz // 2,
                          log_writer=log_writer, cfg=args.cfg, use_ema=True)
             torch.cuda.empty_cache()
 

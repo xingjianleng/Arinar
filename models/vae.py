@@ -469,7 +469,7 @@ class AutoencoderKL(nn.Module):
         print("Missing keys:")
         print(msg.missing_keys)
         print("Unexpected keys:")
-        print([k for k in msg.unexpected_keys if not k.startswith("loss.")])
+        print([k for k in msg.unexpected_keys if not (k.startswith("loss.") or k.startswith("foundation_model.") or k.startswith("linear_proj.weight."))])
         print(f"Restored from {path}")
 
     def encode(self, x):

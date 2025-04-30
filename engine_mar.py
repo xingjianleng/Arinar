@@ -29,7 +29,7 @@ def update_ema(target_params, source_params, rate=0.99):
         targ.detach().mul_(rate).add_(src, alpha=1 - rate)
 
 
-def train_one_epoch(model, vae,
+def train_one_epoch(model, vae, latent_mean, latent_std,
                     model_params, ema_params,
                     data_loader: Iterable, optimizer: torch.optim.Optimizer,
                     device: torch.device, epoch: int, loss_scaler,
@@ -62,7 +62,8 @@ def train_one_epoch(model, vae,
                 posterior = vae.encode(samples)
 
             # normalize the std of latent to be 1. Change it if you use a different tokenizer
-            x = posterior.sample().mul_(args.norm_scale)
+            x = posterior.sample()
+            x = (x - latent_mean) / latent_std
 
         # forward
         if args.bf16:
@@ -119,7 +120,8 @@ def train_one_epoch(model, vae,
     return {k: meter.global_avg for k, meter in metric_logger.meters.items()}
 
 
-def evaluate(model_without_ddp, vae, ema_params, args, epoch, batch_size=16, log_writer=None, cfg=1.0,
+def evaluate(model_without_ddp, vae, latent_mean, latent_std, 
+             ema_params, args, epoch, batch_size=16, log_writer=None, cfg=1.0,
              use_ema=True):
     model_without_ddp.eval()
     num_steps = args.num_images // (batch_size * misc.get_world_size()) + 1
@@ -174,7 +176,8 @@ def evaluate(model_without_ddp, vae, ema_params, args, epoch, batch_size=16, log
                 sampled_tokens = model_without_ddp.sample_tokens(bsz=batch_size, num_iter=args.num_iter, cfg=cfg,
                                                                  cfg_schedule=args.cfg_schedule, labels=labels_gen,
                                                                  temperature=args.temperature)
-                sampled_images = vae.decode(sampled_tokens / args.norm_scale)
+                sampled_tokens = sampled_tokens * latent_std + latent_mean
+                sampled_images = vae.decode(sampled_tokens)
 
         # measure speed after the first generation batch
         if i >= 1:
