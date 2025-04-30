@@ -10,5 +10,5 @@ run.sh
 fid_stats/
 output.out
 /scripts/
-playground.ipynb
 .vscode/
+notebooks/
