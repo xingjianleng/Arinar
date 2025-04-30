@@ -12,7 +12,7 @@ from models.adaln import AdaLNSelfAttn, AdaLNBeforeHead
 class ARHead_gmm(nn.Module):
     def __init__(self, num_gaussians, token_embed_dim, decoder_embed_dim, 
                  inner_ar_width=768, inner_ar_depth=1, head_width=768, head_depth=1, 
-                 bilevel_schedule=False, feature_group=1):
+                 bilevel_schedule="constant", feature_group=1):
         super(ARHead_gmm, self).__init__()
         assert token_embed_dim % feature_group == 0, "token_embed_dim must be divisible by feature_group"
 
@@ -113,19 +113,12 @@ class ARHead_gmm(nn.Module):
             weight, mu, logvar = self.extract_gmm(x, len(x))
 
             if cfg == 1.0:
-                if self.bilevel_schedule:
-                    temp_iter = 1 + (temperature - 1) * i / (self.num_groups - 1)
-                else:
-                    temp_iter = temperature
+                temp_iter = self.schedule(temperature, i+1, self.num_groups)
                 x = self.sample_from_gmm(weight, mu, logvar, temperature=temp_iter, num_samples=1)[0]
                 x = x.reshape(bsz, self.feature_group)
             else:
-                if self.bilevel_schedule:
-                    temp_iter = 1 + (temperature - 1) * i / (self.num_groups - 1)
-                    cfg_iter = 1 + (cfg - 1) * (15-i) / (self.num_groups - 1)
-                else:
-                    temp_iter = temperature
-                    cfg_iter = cfg
+                temp_iter = self.schedule(temperature, i+1, self.num_groups)
+                cfg_iter = self.schedule(cfg, i+1, self.num_groups)
                 half_bsz = len(x) // 2
                 x = self.sample_from_gmm(weight[:half_bsz], mu[:half_bsz], logvar[:half_bsz], 
                                          temperature=temp_iter, num_samples=1000)
@@ -170,6 +163,16 @@ class ARHead_gmm(nn.Module):
         log_likelihood = torch.logsumexp(torch.log(weight.unsqueeze(0)) + log_likelihood, dim=-1)
 
         return log_likelihood
+    
+    def schedule(self, x, step, total_steps):
+        if self.bilevel_schedule == "constant":
+            return x
+        elif self.bilevel_schedule == "linear":
+            return x + (x - 1) * step / total_steps * 0.5
+        elif self.bilevel_schedule == "cosine":
+            return 1 + 0.5 * (x - 1) * (1 + math.cos(math.pi * step / total_steps))
+        else:
+            raise ValueError(f"Unknown schedule: {self.bilevel_schedule}")
 
     def init_weights(self, init_adaln=0.5, init_adaln_gamma=1e-5, init_head=0.02, init_std=0.02, conv_std_or_gain=0.02):
         nn.init.trunc_normal_(self.start_token.data, mean=0, std=init_std)
