@@ -464,12 +464,14 @@ class AutoencoderKL(nn.Module):
         sd = torch.load(path, map_location="cpu")
         if "model" in sd:
             sd = sd["model"]
+        if "state_dict" in sd:
+            sd = sd["state_dict"]
         msg = self.load_state_dict(sd, strict=False)
         print("Loading pre-trained KL-VAE")
         print("Missing keys:")
         print(msg.missing_keys)
         print("Unexpected keys:")
-        print([k for k in msg.unexpected_keys if not (k.startswith("loss.") or k.startswith("foundation_model.") or k.startswith("linear_proj.weight."))])
+        print([k for k in msg.unexpected_keys if not (k.startswith("loss.") or k.startswith("foundation_model.") or k.startswith("linear_proj.weight"))])
         print(f"Restored from {path}")
 
     def encode(self, x):
