@@ -24,6 +24,7 @@ class DiffLoss(nn.Module):
 
         self.train_diffusion = create_diffusion(timestep_respacing="", noise_schedule="cosine")
         self.gen_diffusion = create_diffusion(timestep_respacing=num_sampling_steps, noise_schedule="cosine")
+        self.use_ddim = num_sampling_steps.startswith("ddim")
         self.head_batch_mul = head_batch_mul
 
     def forward(self, target, z, mask=None):
@@ -51,10 +52,15 @@ class DiffLoss(nn.Module):
             model_kwargs = dict(c=z)
             sample_fn = self.net.forward
 
-        sampled_token_latent = self.gen_diffusion.p_sample_loop(
-            sample_fn, noise.shape, noise, clip_denoised=False, model_kwargs=model_kwargs, progress=False,
-            temperature=temperature
-        )
+        if self.use_ddim:
+            sampled_token_latent = self.gen_diffusion.ddim_sample_loop(
+                sample_fn, noise.shape, noise, clip_denoised=False, model_kwargs=model_kwargs, progress=False
+            )
+        else:
+            sampled_token_latent = self.gen_diffusion.p_sample_loop(
+                sample_fn, noise.shape, noise, clip_denoised=False, model_kwargs=model_kwargs, progress=False,
+                temperature=temperature
+            )
 
         return sampled_token_latent
 

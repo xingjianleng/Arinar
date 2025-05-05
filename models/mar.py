@@ -110,7 +110,7 @@ class MAR(nn.Module):
             self.arhead = ARHead_gmm(num_gaussians=num_gaussians, token_embed_dim=self.token_embed_dim,
                                     decoder_embed_dim=decoder_embed_dim, inner_ar_width=inner_ar_width,
                                     inner_ar_depth=inner_ar_depth, head_width=head_width, head_depth=head_depth,
-                                    bilevel_schedule=kwargs.get("bilevel_schedule", False),
+                                    bilevel_schedule=kwargs.get("bilevel_schedule", "constant"),
                                     feature_group=kwargs.get("feature_group", 1))
         elif head_type == "ar_diff_loss":
             self.arhead = ARHead_diff(token_embed_dim=self.token_embed_dim,
@@ -415,8 +415,11 @@ def mar_large(**kwargs):
 
 
 def mar_huge(**kwargs):
+    encoder_depth = decoder_depth = kwargs.pop('enc_dec_depth')
+    if encoder_depth < 0:
+        encoder_depth = decoder_depth = 22
     model = MAR(
-        encoder_embed_dim=1280, encoder_depth=22, encoder_num_heads=16,
-        decoder_embed_dim=1280, decoder_depth=22, decoder_num_heads=16,
+        encoder_embed_dim=1280, encoder_depth=encoder_depth, encoder_num_heads=16,
+        decoder_embed_dim=1280, decoder_depth=decoder_depth, decoder_num_heads=16,
         mlp_ratio=4, norm_layer=partial(nn.LayerNorm, eps=1e-6), **kwargs)
     return model

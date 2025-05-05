@@ -106,7 +106,7 @@ def get_args_parser():
 parser = get_args_parser()
 args = parser.parse_args()
 
-def save_images(tokens, path):
+def save_images(tokens, path, mask=None):
     os.makedirs(path, exist_ok=True)
     # unpatchify
     sampled_tokens = model.unpatchify(tokens)
@@ -115,10 +115,23 @@ def save_images(tokens, path):
     sampled_images = sampled_images.detach().cpu()
     sampled_images = (sampled_images + 1) / 2
 
+    if mask is not None:
+        mask = mask.reshape(-1, 16, 16)
+        patch_size = 16
+        for i in range(16):
+            for j in range(16):
+                h0 = i * patch_size
+                w0 = j * patch_size
+                patch = mask[:, i, j].reshape(-1, 1, 1, 1).expand(-1, 3, patch_size, patch_size).cpu()
+
+                gray = torch.tensor([0.482, 0.459, 0.404]).reshape(1, 3, 1, 1).expand(-1, 3, patch_size, patch_size)
+
+                sampled_images[..., h0:h0+patch_size, w0:w0+patch_size] = torch.where(patch.bool(), gray, sampled_images[..., h0:h0+patch_size, w0:w0+patch_size])
+
     for b_id in range(sampled_images.size(0)):
         gen_img = np.round(np.clip(sampled_images[b_id].numpy().transpose([1, 2, 0]) * 255, 0, 255))
         gen_img = gen_img.astype(np.uint8)[:, :, ::-1]
-        cv2.imwrite(os.path.join(path, '{}.png'.format(str(b_id).zfill(5))), gen_img)
+        cv2.imwrite(os.path.join(path, '{}.png'.format(str(base_iter*args.batch_size+b_id).zfill(5))), gen_img)
 
 
 dataset_train = CachedFolder(args.cached_path)
@@ -134,6 +147,9 @@ data_loader_train = torch.utils.data.DataLoader(
 kwargs = {
         "num_sampling_steps": args.num_sampling_steps,
         "enc_dec_depth": args.enc_dec_depth,
+        # "diff_upper_steps": 50,
+        # "diff_lower_steps": 50,
+        # "diff_sampling_strategy": "constant"
     }
 model = mar.__dict__[args.model](
             img_size=args.img_size,
@@ -172,15 +188,14 @@ for param in vae.parameters():
     param.requires_grad = False
 
 probe = UncondSimpleMLP(
-    in_channels=768,
-    model_channels=1024,
+    in_channels=args.inner_ar_width,
+    model_channels=args.head_width,
     out_channels=args.vae_embed_dim,
-    num_res_blocks=6,
+    num_res_blocks=args.head_depth,
     grad_checkpointing=False
 )
 probe.to(args.device)
 
-##TODO
 if not args.evaluate:
     optimizer = torch.optim.Adam(probe.parameters(), lr=args.lr, betas=(0.9, 0.999), eps=1e-08)
 
@@ -222,92 +237,112 @@ if not args.evaluate:
         if step % 100 == 0:
             print(f"Step {step}, Loss: {loss.item()}")
 
-    torch.save(probe.state_dict(), os.path.join(args.output_dir, "probe.pth"))
+    torch.save(probe.state_dict(), os.path.join(args.output_dir, f"probe_{args.model}.pth"))
 
 else:
     # Set the random seed for reproducibility
-    torch.manual_seed(42)
-    torch.cuda.manual_seed(42)
+    # torch.manual_seed(42)
+    # torch.cuda.manual_seed(42)
 
-    checkpoint = torch.load(os.path.join(args.output_dir, "probe.pth"), map_location='cpu')
+    checkpoint = torch.load(os.path.join(args.output_dir, f"probe_{args.model}.pth"), map_location='cpu')
     probe.load_state_dict(checkpoint, strict=True)
     probe.eval()
     print("Probe loaded from %s" % args.output_dir)
 
-    with torch.no_grad():
-        batch_size = 64
-        classes = torch.randint(low=0, high=1000, size=(batch_size,)).cuda()
-        # init and sample generation orders
-        mask = torch.ones(batch_size, model.seq_len).cuda()
-        tokens = torch.zeros(batch_size, model.seq_len, model.token_embed_dim).cuda()
-        orders = model.sample_orders(bsz=batch_size)
+    for base_iter in range(1):
+        with torch.no_grad() and torch.cuda.amp.autocast():
+            batch_size = args.batch_size
+            # 980, 980, 437, 437, 22, 22, 562, 562
+            classes = torch.randint(low=0, high=1000, size=(batch_size,)).cuda()
+            # classes = torch.from_numpy(np.random.choice([980, 980, 437, 437, 22, 22, 562, 562, 985, 323], size=(batch_size,), replace=True)).cuda()
+            
+            # init and sample generation orders
+            mask = torch.ones(batch_size, model.seq_len).cuda()
+            tokens = torch.zeros(batch_size, model.seq_len, model.token_embed_dim).cuda()
+            orders = model.sample_orders(bsz=batch_size)
 
-        indices = list(range(args.num_iter))
-        indices = tqdm(indices)
+            indices = list(range(args.num_iter))
+            indices = tqdm(indices)
 
-        # generate latents
-        for step in indices:
-            cur_tokens = tokens.clone()
+            # generate latents
+            for step in indices:
+                cur_tokens = tokens.clone()
+                cur_mask = mask.clone()
+                # class embedding and CFG
+                class_embedding = model.class_emb(classes).cuda()
 
-            # class embedding and CFG
-            class_embedding = model.class_emb(classes).cuda()
+                if not args.cfg == 1.0:
+                    tokens = torch.cat([tokens, tokens], dim=0)
+                    class_embedding = torch.cat([class_embedding, model.fake_latent.repeat(batch_size, 1)], dim=0)
+                    mask = torch.cat([mask, mask], dim=0)
 
-            # mae encoder
-            x = model.forward_mae_encoder(tokens, mask, class_embedding)
+                # mae encoder
+                x = model.forward_mae_encoder(tokens, mask, class_embedding)
 
-            # mae decoder
-            z = model.forward_mae_decoder(x, mask)
+                # mae decoder
+                z = model.forward_mae_decoder(x, mask)
 
-            # save_images(tokens, os.path.join(args.output_dir, "step_{}".format(step)))
-            # # Use probe to predict the latents
-            # out = probe(z)
-            # completed_latents = out * mask.int().unsqueeze(-1) + tokens * (1 - mask.int().unsqueeze(-1))
-            # save_images(completed_latents, os.path.join(args.output_dir, "probe_completed_{}".format(step)))
-            # real_sampled_latents = model.next_layer_sample(z.reshape(-1, 768), temperature=1.0, cfg=1.0)
-            # real_sampled_latents = real_sampled_latents.reshape(batch_size, model.seq_len, -1)
-            # loss = (real_sampled_latents - completed_latents).pow(2).mean(-1)
-            # loss = (loss * mask).sum() / mask.sum()
-            # print(f"Step {step}, Loss: {loss.item()}")
+                # if step in [51]:
+                #     # Num_iter = 64
+                #     # Step 26, Mask Ratio: 0.80078125
+                #     # Step 29, Mask Ratio: 0.75390625
+                #     # Step 43, Mask Ratio: 0.4921875
+                #     # Step 54, Mask Ratio: 0.2421875
+                #     # Num_iter = 256
+                #     # Step 51
+                #     save_images(cur_tokens, os.path.join(args.output_dir, "step_{}".format(step)), cur_mask)
+                #     # Use probe to predict the latents
+                #     out = probe(z[:batch_size])
+                #     completed_latents = out * cur_mask.int().unsqueeze(-1) + cur_tokens * (1 - cur_mask.int().unsqueeze(-1))
+                #     save_images(completed_latents, os.path.join(args.output_dir, "probe_completed_{}".format(step)))
+                #     # real_sampled_latents = model.next_layer_sample(z.reshape(-1, 768), temperature=1.0, cfg=1.0)
+                #     # real_sampled_latents = real_sampled_latents.reshape(batch_size, model.seq_len, -1)
+                #     # loss = (real_sampled_latents - completed_latents).pow(2).mean(-1)
+                #     # loss = (loss * cur_mask).sum() / cur_mask.sum()
+                #     print(f"Step {step}, Mask Ratio: {cur_mask.sum() / cur_mask.numel()}, Mask Num: {cur_mask.sum() / cur_mask.shape[0]}")
 
-            # mask ratio for the next round, following MaskGIT and MAGE.
-            mask_ratio = np.cos(math.pi / 2. * (step + 1) / args.num_iter)
-            mask_len = torch.tensor([np.floor(model.seq_len * mask_ratio)]).cuda()
+                # mask ratio for the next round, following MaskGIT and MAGE.
+                mask_ratio = np.cos(math.pi / 2. * (step + 1) / args.num_iter)
+                mask_len = torch.tensor([np.floor(model.seq_len * mask_ratio)]).cuda()
 
-            # masks out at least one for the next iteration
-            mask_len = torch.maximum(torch.Tensor([1]).cuda(),
-                                        torch.minimum(torch.sum(mask, dim=-1, keepdims=True) - 1, mask_len))
+                # masks out at least one for the next iteration
+                mask_len = torch.maximum(torch.Tensor([1]).cuda(),
+                                            torch.minimum(torch.sum(mask, dim=-1, keepdims=True) - 1, mask_len))
 
-            # get masking for next iteration and locations to be predicted in this iteration
-            mask_next = mask_by_order(mask_len[0], orders, batch_size, model.seq_len)
-            if step >= args.num_iter - 1:
-                mask_to_pred = mask[:batch_size].bool()
-            else:
-                mask_to_pred = torch.logical_xor(mask[:batch_size].bool(), mask_next.bool())
-            mask = mask_next
+                # get masking for next iteration and locations to be predicted in this iteration
+                mask_next = mask_by_order(mask_len[0], orders, batch_size, model.seq_len)
+                if step >= args.num_iter - 1:
+                    mask_to_pred = mask[:batch_size].bool()
+                else:
+                    mask_to_pred = torch.logical_xor(mask[:batch_size].bool(), mask_next.bool())
+                mask = mask_next
 
-            if not args.cfg == 1.0:
-                mask_to_pred = torch.cat([mask_to_pred, mask_to_pred], dim=0)
+                if not args.cfg == 1.0:
+                    mask_to_pred = torch.cat([mask_to_pred, mask_to_pred], dim=0)
 
-            # sample token latents for this step
-            z = z[mask_to_pred.nonzero(as_tuple=True)]
-            # cfg schedule follow Muse
-            if args.cfg_schedule == "linear":
-                cfg_iter = 1 + (args.cfg - 1) * (model.seq_len - mask_len[0]) / model.seq_len
-            elif args.cfg_schedule == "constant":
-                cfg_iter = args.cfg
-            else:
-                raise NotImplementedError
+                # sample token latents for this step
+                z = z[mask_to_pred.nonzero(as_tuple=True)]
+                # cfg schedule follow Muse
+                if args.cfg_schedule == "linear":
+                    cfg_iter = 1 + (args.cfg - 1) * (model.seq_len - mask_len[0]) / model.seq_len
+                elif args.cfg_schedule == "constant":
+                    cfg_iter = args.cfg
+                else:
+                    raise NotImplementedError
 
-            sampled_token_latent = model.next_layer_sample(z, temperature=args.temperature, cfg=cfg_iter)
+                sampled_token_latent = model.next_layer_sample(z, temperature=args.temperature, cfg=cfg_iter.float())
 
-            if not args.cfg == 1.0:
-                sampled_token_latent, _ = sampled_token_latent.chunk(2, dim=0)  # Remove null class samples
-                mask_to_pred, _ = mask_to_pred.chunk(2, dim=0)
+                if not args.cfg == 1.0:
+                    sampled_token_latent, _ = sampled_token_latent.chunk(2, dim=0)  # Remove null class samples
+                    mask_to_pred, _ = mask_to_pred.chunk(2, dim=0)
 
-            cur_tokens[mask_to_pred.nonzero(as_tuple=True)] = sampled_token_latent
-            tokens = cur_tokens.clone()
+                cur_tokens[mask_to_pred.nonzero(as_tuple=True)] = sampled_token_latent
+                tokens = cur_tokens.clone()
 
-            sampled_token_latent = model.next_layer_sample(z[:128].repeat(5000, 1), temperature=args.temperature, cfg=cfg_iter)
-            torch.save(sampled_token_latent, os.path.join(args.output_dir, "diff_sampled_latents/sampled_latents_{}_5000times.pth".format(step)))
+                sampled_token_latent = model.next_layer_sample(z.repeat(5000, 1), temperature=args.temperature, cfg=cfg_iter)
+                torch.save(sampled_token_latent, os.path.join(args.output_dir, "diff_sampled_latents/sampled_latents_{}_5000times.pth".format(step)))
 
-        save_images(tokens, os.path.join(args.output_dir, "fully_sampled"))
+                out = probe(z)
+                torch.save(out, os.path.join(args.output_dir, "diff_sampled_latents/probed_{}.pth".format(step)))
+
+            save_images(tokens, os.path.join(args.output_dir, "fully_sampled"))

@@ -105,7 +105,8 @@ def get_args_parser():
     parser.add_argument('--head_depth', type=int, default=6)
     parser.add_argument('--num_sampling_steps', type=str, default="100")
     parser.add_argument('--feature_group', type=int, default=1)
-    parser.add_argument('--bilevel_schedule', action='store_true', help='use bilevel schedule for model head')
+    parser.add_argument('--bilevel_schedule', default="constant", type=str,
+                         help='use bilevel schedule for model head')
 
     # Dataset parameters
     parser.add_argument('--data_path', default='./data/imagenet', type=str,
@@ -216,8 +217,11 @@ def main(args):
     vae = AutoencoderKL(embed_dim=args.vae_embed_dim, ch_mult=(1, 1, 2, 2, 4), ckpt_path=args.vae_path, **vae_kwargs).cuda().eval()
     for param in vae.parameters():
         param.requires_grad = False
-    latent_stats = torch.load(os.path.join(args.cached_path, "latents_stats.pt"))
-    latent_mean, latent_std = latent_stats['mean'].to(device), latent_stats['std'].to(device)
+    if 'mar_cache' in args.cached_path:
+        latent_mean, latent_std = 0.0, 1. / 0.2325
+    else:
+        latent_stats = torch.load(os.path.join(args.cached_path, "latents_stats.pt"))
+        latent_mean, latent_std = latent_stats['mean'].to(device), latent_stats['std'].to(device)
 
     kwargs = {
         "num_sampling_steps": args.num_sampling_steps,
